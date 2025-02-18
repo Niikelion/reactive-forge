@@ -3,8 +3,9 @@ import {ComponentLibraryProvider, ComponentRenderer} from "@reactive-forge/ui"
 import {components} from "../reactive-forge";
 import {c} from "@reactive-forge/ui";
 import {ComponentContextProvider} from "@reactive-forge/ui";
+import {JSX} from "react";
 
-function App() {
+function App(): JSX.Element {
     return (
         <ComponentLibraryProvider components={components}>
             <ComponentContextProvider>

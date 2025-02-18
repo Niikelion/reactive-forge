@@ -1,5 +1,15 @@
 import path from "path"
-import {FunctionDeclaration, Node, Project, Signature, Symbol, ts, Type, VariableDeclaration} from "ts-morph"
+import {
+    ExportAssignment,
+    FunctionDeclaration,
+    Node,
+    Project,
+    Signature,
+    Symbol,
+    ts,
+    Type,
+    VariableDeclaration
+} from "ts-morph"
 import {ComponentData} from "./types"
 import {ObjectTypeSchema, PrimitiveTypeSchema, ValueTypeSchema} from "@reactive-forge/shared"
 
@@ -20,8 +30,8 @@ function createUtils(project: Project)
 {
     // language=Typescript
     const source = `
-        import {FC, ReactNode} from "react"
-        export type ComponentReturnType = ReturnType<FC>
+        import {FC, ReactNode, JSX} from "react"
+        export type ComponentReturnType = ReturnType<FC> | JSX.Element
         export type ReactNodeType = ReactNode
         export type DateType = Date
         export type TrueType = true
@@ -53,20 +63,25 @@ function createUtils(project: Project)
         "FalseType"
     )
 
+    function callSignatureFromType(type: Type): Signature | undefined {
+        const callSignatures = type.getCallSignatures()
+
+        if (callSignatures.length === 0) return undefined
+
+        return callSignatures[0]
+    }
+
     function getSignature(node: Node): Signature | undefined
     {
-        if (node instanceof FunctionDeclaration)
-            return node.getSignature()
+        if (node instanceof FunctionDeclaration) return node.getSignature()
 
-        if (node instanceof VariableDeclaration)
+        if (node instanceof VariableDeclaration) return callSignatureFromType(node.getType())
+
+        if (node instanceof ExportAssignment)
         {
-            const type = node.getType()
-            const callSignatures = type.getCallSignatures()
-
-            if (callSignatures.length === 0)
-                return undefined
-
-            return callSignatures[0]
+            const expression = node.getExpression()
+            const type = expression.getType()
+            return callSignatureFromType(type)
         }
 
         return undefined
@@ -88,9 +103,9 @@ function createUtils(project: Project)
 
     function extractComponentData(signature: Signature | undefined, symbol: Symbol, isDefault: boolean): ComponentData | null
     {
-        if (signature === undefined) return null
-
         const name = symbol.getDeclarations()[0].getFirstChild(n => n.isKind(ts.SyntaxKind.Identifier))!.getText()
+
+        if (signature === undefined) return null
 
         if (!verifySignature(signature)) return null
 
@@ -118,8 +133,10 @@ function createUtils(project: Project)
 
         const params: ComponentData["args"] = {}
 
-        for (const property of type.getProperties())
-            params[property.getName()] = typeToSchema(property.getTypeAtLocation(declaration), declaration)
+        for (const property of type.getProperties()) {
+            const paramType = property.getTypeAtLocation(declaration)
+            params[property.getName()] = { ...typeToSchema(paramType, declaration), required: !property.isOptional() }
+        }
 
         return params
     }
@@ -203,13 +220,15 @@ function createUtils(project: Project)
     }
 }
 
-export async function extractComponents(project: Project, rootDir: string): Promise<ComponentData[]> {
+export async function extractComponents(project: Project, componentRoots: string[]): Promise<ComponentData[]> {
     const utils = createUtils(project)
 
-    const rootPath = path.resolve(rootDir).replace(/\\/g, "/")
+    const rootPaths = componentRoots.map(rootDir => path.resolve(rootDir).replace(/\\/g, "/"))
 
     return project.getSourceFiles().map(sourceFile => {
-        if (!sourceFile.getFilePath().startsWith(rootPath)) return []
+        const sourceFilePath = sourceFile.getFilePath()
+        if (!rootPaths.some(rootPath => sourceFilePath.startsWith(rootPath)))
+            return []
 
         const exportNames = sourceFile.getExportDeclarations().map(declaration => {
             const modulePath = declaration.getModuleSpecifier()
