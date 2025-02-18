@@ -1,5 +1,5 @@
 {
-  "name": "@reactive-forge/ui",
+  "name": "@reactive-forge/vite",
   "version": "0.0.0",
   "exports": {
     ".": "./dist/index.js"
@@ -12,14 +12,11 @@
   "devDependencies": {
     "@reactive-forge/eslint-config": "*",
     "@reactive-forge/typescript-config": "*",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
     "eslint": "^8.57.0",
     "typescript": "5.5.4"
   },
   "dependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "zod": "^3.24.2"
+    "vite": "^6.1.0",
+    "@reactive-forge/codegen": "*"
   }
 }
