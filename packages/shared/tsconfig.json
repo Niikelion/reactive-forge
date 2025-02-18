@@ -4,10 +4,6 @@
   "exclude": ["node_modules", "dist"],
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": ".",
-    "jsx": "react-jsx",
-  },
-  "references": [
-    { "path": "../shared" }
-  ]
+    "rootDir": "."
+  }
 }

@@ -8,6 +8,6 @@
     "jsx": "react-jsx",
   },
   "references": [
-    { "path": "../shared" }
+    { "path": "../codegen" }
   ]
 }

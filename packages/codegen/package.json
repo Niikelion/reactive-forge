@@ -1,0 +1,23 @@
+{
+  "name": "@reactive-forge/codegen",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "lint": "eslint \"**/*.ts\"",
+    "build": "tsc --build"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "devDependencies": {
+    "@reactive-forge/eslint-config": "*",
+    "@reactive-forge/typescript-config": "*",
+    "eslint": "^8.57.0"
+  },
+  "dependencies": {
+    "@reactive-forge/shared": "*",
+    "@types/node": "^22.13.4",
+    "ts-morph": "^25.0.1",
+    "typescript": "5.5.4"
+  }
+}
