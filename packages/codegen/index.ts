@@ -5,6 +5,7 @@ import {GenerateConfig, generateFiles} from "./generate.js";
 export type CodegenConfig = {
     reactTypesFilePath: string
     tsConfigFilePath: string
+    componentRoots: string[]
 } & GenerateConfig
 
 export const createCodegen = async (config: CodegenConfig) => {
@@ -13,7 +14,7 @@ export const createCodegen = async (config: CodegenConfig) => {
         libFolderPath: config.reactTypesFilePath
     })
 
-    const components = await extractComponents(project, config.rootDir)
+    const components = await extractComponents(project, config.componentRoots)
 
     await generateFiles(project, components, config)
 }

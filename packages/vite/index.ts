@@ -18,6 +18,7 @@ export const reactiveForge = (config?: ReactiveForgePluginConfig): PluginOption 
             const tsConfigFilePath = config?.tsConfigFilePath ?? path.resolve(rootDir, "./tsconfig.app.json")
             const reactTypesFilePath = config?.reactTypesFilePath ?? path.resolve(rootDir, "./node_modules/typescript/lib")
             const outDir = config?.outDir ?? path.resolve(rootDir, "./reactive-forge")
+            const componentRoots = config?.componentRoots ?? [baseDir]
             const pathPrefix = config?.pathPrefix ?? "@/"
 
             await createCodegen({
@@ -26,7 +27,8 @@ export const reactiveForge = (config?: ReactiveForgePluginConfig): PluginOption 
                 outDir,
                 rootDir,
                 baseDir,
-                pathPrefix
+                pathPrefix,
+                componentRoots
             })
         }
     }
