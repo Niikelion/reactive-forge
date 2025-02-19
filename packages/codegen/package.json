@@ -1,6 +1,6 @@
 {
   "name": "@reactive-forge/codegen",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "license": "MIT",
   "scripts": {
     "lint": "eslint \"**/*.ts\"",
@@ -19,5 +19,12 @@
     "@types/node": "^22.13.4",
     "ts-morph": "^25.0.1",
     "typescript": "5.5.4"
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "package.json"
+  ]
 }

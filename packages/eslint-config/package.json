@@ -1,7 +1,7 @@
 {
   "name": "@reactive-forge/eslint-config",
-  "version": "0.0.0",
-  "main": "index.js",
+  "version": "0.0.1",
+  "main": "index.mjs",
   "license": "MIT",
   "dependencies": {
     "@eslint/js": "^9.14.0",
@@ -14,5 +14,9 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "files": [
+    "index.mjs",
+    "package.json"
+  ]
 }

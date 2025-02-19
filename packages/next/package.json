@@ -1,5 +1,5 @@
 {
-  "name": "@reactive-forge/vite",
+  "name": "@reactive-forge/next",
   "version": "0.0.1",
   "exports": {
     ".": "./dist/index.js"
@@ -13,11 +13,12 @@
     "@reactive-forge/eslint-config": "*",
     "@reactive-forge/typescript-config": "*",
     "eslint": "^8.57.0",
-    "typescript": "5.5.4"
+    "typescript": "^5.5.4"
   },
   "dependencies": {
-    "vite": "^6.1.0",
-    "@reactive-forge/codegen": "*"
+    "@reactive-forge/codegen": "*",
+    "next": "^14 || ^15",
+    "webpack": "^5.98.0"
   },
   "publishConfig": {
     "access": "public"
