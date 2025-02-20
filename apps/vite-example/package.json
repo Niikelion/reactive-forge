@@ -1,5 +1,5 @@
 {
-  "name": "@reactive-forge/example",
+  "name": "@reactive-forge/vite-example",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -13,11 +13,12 @@
   "dependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "@reactive-forge/ui": "*"
+    "@reactive-forge/ui": "0.0.4",
+    "@reactive-forge/vite": "0.0.4",
+    "@reactive-forge/shared": "0.0.4"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",
-    "@reactive-forge/vite": "*",
     "@reactive-forge/eslint-config": "*",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
