@@ -14,6 +14,11 @@ export type ObjectTypeSchema = {
     type: "object"
     properties: Record<string, ValueTypeSchema & { required: boolean }>
 }
+export type RecordTypeSchema = {
+    type: "record"
+    key: "string" | "number"
+    value: ValueTypeSchema
+}
 export type UnionTypeSchema = {
     type: "union"
     types: ValueTypeSchema[]
@@ -23,7 +28,7 @@ export type IntersectionTypeSchema = {
     type: "intersection"
     types: ValueTypeSchema[]
 }
-export type ValueTypeSchema = PrimitiveTypeSchema | ArrayTypeSchema | ObjectTypeSchema | UnionTypeSchema | IntersectionTypeSchema
+export type ValueTypeSchema = PrimitiveTypeSchema | ArrayTypeSchema | ObjectTypeSchema | RecordTypeSchema | UnionTypeSchema | IntersectionTypeSchema
 
 export type ComponentSchema = Readonly<{
     component: FC<Record<string, ArgumentValue>>,
@@ -65,7 +70,7 @@ export class ComponentLibrary
 export const isBoolean = (n: unknown): n is boolean => n instanceof Boolean || typeof n === "boolean"
 export const isNumber = (n: unknown): n is number => n instanceof Number || typeof n === "number"
 export const isString = (n: unknown): n is string => n instanceof String || typeof n === "string"
-export const isObject = (n: unknown): n is Record<string, unknown> => n === Object(n)
+export const isObject = (n: unknown): n is Record<string | number, unknown> => n === Object(n)
 
 export function isReactNode(value: ArgumentValue): value is ReactNode {
     if (value === null || value === undefined || isBoolean(value) || isNumber(stream) || isString(value))
@@ -103,6 +108,18 @@ export function verifyValue(value: ArgumentValue, schema: ValueTypeSchema): bool
 
                 return verifyValue(value[propName], propSchema)
             })
+        }
+        case "record": {
+            if (!isObject(value)) return false
+
+            for (const prop in value) {
+                if (isString(prop) && schema.key === "number") return false
+                if (isNumber(prop) && schema.key === "string") return false
+
+                if (!verifyValue(value[prop], schema.value)) return false
+            }
+
+            return true
         }
         case "union": return schema.types.some(s => verifyValue(value, s))
         case "intersection": return schema.types.every(s => verifyValue(value ,s))

@@ -11,7 +11,7 @@ import {
     VariableDeclaration
 } from "ts-morph"
 import {ComponentData} from "./types"
-import {ObjectTypeSchema, PrimitiveTypeSchema, ValueTypeSchema} from "@reactive-forge/shared"
+import {ObjectTypeSchema, PrimitiveTypeSchema, RecordTypeSchema, ValueTypeSchema} from "@reactive-forge/shared"
 
 const isDefined = <T>(v: T | undefined | null): v is T => v !== null && v !== undefined
 const isString = (v: unknown): v is string => v instanceof String || typeof v === "string"
@@ -156,14 +156,54 @@ function createUtils(project: Project)
 
         const literalValue = type.getLiteralValue()
 
-        switch (type.getFlags()) {
-            case ts.TypeFlags.Intersection: {
-                return {
-                    type: "intersection",
-                    types: type.getIntersectionTypes().map(t => typeToSchema(t, node))
-                }
+        const typeFlags = type.getFlags()
+
+        if (typeFlags & ts.TypeFlags.Union)
+            return {
+                type: "union",
+                types: type.getUnionTypes().map(t => typeToSchema(t, node))
             }
+
+        if (typeFlags & ts.TypeFlags.Intersection)
+            return {
+                type: "intersection",
+                types: type.getIntersectionTypes().map(t => typeToSchema(t, node))
+            }
+
+        if (typeFlags & ts.TypeFlags.StringLike)
+            return sanitizePrimitiveSchema({
+                type: "string",
+                value: literalValueToSchema(literalValue)
+            })
+
+        if (typeFlags & ts.TypeFlags.NumberLike)
+            return sanitizePrimitiveSchema({
+                type: "number",
+                value: literalValueToSchema(literalValue)
+            })
+
+        if (typeFlags & ts.TypeFlags.BooleanLike)
+            return sanitizePrimitiveSchema({
+                type: "boolean",
+                value: type.isAssignableTo(types.TrueType) ? true : type.isAssignableTo(types.FalseType) ? false : undefined
+            })
+
+        switch (type.getFlags()) {
+            case ts.TypeFlags.Null:
+                return { type: "null" }
+            case ts.TypeFlags.Undefined:
+                return { type: "undefined" }
             case ts.TypeFlags.Object: {
+                const stringIndexType = indexTypeToSchema(type.getStringIndexType(), "string", node)
+
+                if (stringIndexType)
+                    return stringIndexType
+
+                const numberIndexType = indexTypeToSchema(type.getNumberIndexType(), "number", node)
+
+                if (numberIndexType)
+                    return numberIndexType
+
                 const props: ObjectTypeSchema["properties"] = {}
 
                 for (const prop of type.getProperties())
@@ -174,28 +214,10 @@ function createUtils(project: Project)
                     properties: props
                 }
             }
-            case ts.TypeFlags.StringLiteral:
-            case ts.TypeFlags.String: {
-                return sanitizePrimitiveSchema({
-                    type: "string",
-                    value: literalValueToSchema(literalValue)
-                })
+            default: {
+                console.log(`unsupported node: ${type.getFlags()} in unsupported type: ${project.getTypeChecker().getTypeText(type)}`)
+                throw new Error("Unsupported type")
             }
-            case ts.TypeFlags.NumberLiteral:
-            case ts.TypeFlags.Number: {
-                return sanitizePrimitiveSchema({
-                    type: "number",
-                    value: literalValueToSchema(literalValue)
-                })
-            }
-            case ts.TypeFlags.BooleanLiteral:
-            case ts.TypeFlags.Boolean: {
-                return sanitizePrimitiveSchema({
-                    type: "boolean",
-                    value: type.isAssignableTo(types.TrueType) ? true : type.isAssignableTo(types.FalseType) ? false : undefined
-                })
-            }
-            default: throw new Error("Unsupported type")
         }
     }
 
@@ -204,6 +226,17 @@ function createUtils(project: Project)
         if (value === undefined || isString(value) || isNumber(value)) return value
 
         if ("negative" in value) return undefined
+    }
+
+    function indexTypeToSchema(valueType: Type | undefined, keyType: "string" | "number", node: Node): RecordTypeSchema | undefined
+    {
+        if (valueType === undefined) return undefined
+
+        return {
+            type: "record",
+            key: keyType,
+            value: typeToSchema(valueType, node)
+        }
     }
 
     function sanitizePrimitiveSchema(type: PrimitiveTypeSchema)

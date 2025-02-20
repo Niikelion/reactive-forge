@@ -1,6 +1,6 @@
 {
   "name": "@reactive-forge/codegen",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -27,7 +27,7 @@
     "eslint": "^8.57.0"
   },
   "dependencies": {
-    "@reactive-forge/shared": "0.0.4",
+    "@reactive-forge/shared": "0.0.5",
     "@types/node": "^22.13.4",
     "ts-morph": "^25.0.1",
     "typescript": "5.5.4"
