@@ -1,6 +1,6 @@
 {
   "name": "@reactive-forge/ui",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -30,7 +30,7 @@
     "typescript": "5.5.4"
   },
   "dependencies": {
-    "@reactive-forge/shared": "0.0.4",
+    "@reactive-forge/shared": "0.0.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "zod": "^3.24.2"
