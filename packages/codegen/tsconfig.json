@@ -1,12 +1,8 @@
 {
   "extends": "@reactive-forge/typescript-config/base.json",
-  "include": ["."],
   "exclude": ["node_modules", "dist"],
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "."
-  },
-  "references": [
-    { "path": "../shared" }
-  ]
+    "rootDir": "src"
+  }
 }

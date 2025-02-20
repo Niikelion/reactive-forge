@@ -11,10 +11,10 @@ class ReactiveForgeWebpackPlugin implements WebpackPluginInstance {
     }
 
     apply(compiler: Compiler) {
-        compiler.hooks.beforeRun.tapPromise("ReactiveForgeWebpackPlugin", async () => {
-            console.log("Generating reactive-forge files")
-            await createCodegen(this.config)
-        })
+        const codegen = async () => await createCodegen(this.config)
+
+        compiler.hooks.beforeRun.tapPromise("ReactiveForgeWebpackPlugin", codegen)
+        compiler.hooks.watchRun.tapPromise("ReactiveForgeWebpackPlugin", codegen)
     }
 }
 

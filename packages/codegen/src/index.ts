@@ -15,6 +15,5 @@ export const createCodegen = async (config: CodegenConfig) => {
     })
 
     const components = await extractComponents(project, config.componentRoots)
-
     await generateFiles(project, components, config)
 }
