@@ -8,7 +8,7 @@ import {
     Symbol,
     ts,
     Type,
-    VariableDeclaration
+    VariableDeclaration, Writers
 } from "ts-morph"
 import {ComponentData} from "./types"
 import {
@@ -212,7 +212,6 @@ function createUtils(project: Project)
                 type: "number",
                 value: isNumber(literalValue) ? literalValue : undefined
             })
-
         if (typeFlags & ts.TypeFlags.BooleanLike)
             return sanitizePrimitiveSchema({
                 type: "boolean",
@@ -233,8 +232,18 @@ function createUtils(project: Project)
 
                 const props: ObjectTypeSchema["properties"] = {}
 
-                for (const prop of type.getProperties())
-                    props[prop.getName()] = { ...typeToSchema(prop.getTypeAtLocation(node), node), required: !prop.isOptional() }
+                for (const prop of type.getProperties()) {
+                    const required = !prop.isOptional()
+
+                    try {
+                        props[prop.getName()] = {
+                            ...typeToSchema(prop.getTypeAtLocation(node), node),
+                            required
+                        }
+                    } catch (err) {
+                        if (required) throw err
+                    }
+                }
 
                 return {
                     type: "object",
@@ -252,9 +261,13 @@ function createUtils(project: Project)
     {
         if (valueType === undefined) return undefined
 
-        return {
-            key: keyType,
-            value: typeToSchema(valueType, node)
+        try {
+            return {
+                key: keyType,
+                value: typeToSchema(valueType, node)
+            }
+        } catch {
+            return undefined
         }
     }
 
