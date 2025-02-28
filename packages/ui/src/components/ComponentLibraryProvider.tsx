@@ -1,7 +1,13 @@
 import {createContext, FC, ReactNode, useContext} from "react";
-import {ComponentLibrary} from "@reactive-forge/shared";
+import {ComponentFile, ComponentLibrary} from "@reactive-forge/shared";
 
-const componentLibraryContext = createContext<ComponentLibrary>(new ComponentLibrary())
+const Empty: FC = () => <div/>
+
+const componentLibraryContext = createContext<ComponentLibrary>(new ComponentLibrary(
+    new ComponentFile("$", {
+        Empty: { component: Empty, args: {} }
+    })
+))
 
 function mergeLibraries(...libraries: ComponentLibrary[]): ComponentLibrary
 {

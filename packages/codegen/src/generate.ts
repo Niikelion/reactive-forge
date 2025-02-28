@@ -1,6 +1,23 @@
-import {Project} from "ts-morph";
+import {Project, SourceFile} from "ts-morph";
 import {ComponentData} from "./types";
 import path from "path";
+import fs from "fs/promises";
+
+async function saveFileIfChanged(file: SourceFile): Promise<void> {
+    if (!await fileContentChanged(file.getFilePath(), file.getFullText())) return
+
+    console.log(`[reactive-forge]: Updating ${file.getFilePath()}`)
+    await file.save()
+}
+
+async function fileContentChanged(filePath: string, content: string): Promise<boolean> {
+    try {
+        const fileContent = await fs.readFile(filePath, 'utf-8')
+        return content !== fileContent
+    } catch {
+        return true
+    }
+}
 
 export type GenerateConfig = {
     outDir: string
@@ -81,7 +98,7 @@ export async function generateFiles(project: Project, components: ComponentData[
         resultFile.addStatements(`export const __file = new ComponentFile(\n\t"${pathPrefix}${filePath}",\n\t{\n${module.components.map(c => `\t\t${c.name}: {\n\t\t\tcomponent: ${c.name} as FC,\n\t\t\targs: ${JSON.stringify(c.args)}\n\t}`).join(", ")}\n\t}\n)`)
         resultFile.formatText()
 
-        await resultFile.save()
+        await saveFileIfChanged(resultFile)
     }
 
     const aggregateFile = project.createSourceFile(path.resolve(outDir, "./index.ts"), "", { overwrite: true })
@@ -111,5 +128,5 @@ export async function generateFiles(project: Project, components: ComponentData[
 
     aggregateFile.addStatements(`export const components = new ComponentLibrary(\n${libraryFiles.map(f => `\t${f}`).join(",\n")}\n);`)
 
-    await aggregateFile.save()
+    await saveFileIfChanged(aggregateFile)
 }

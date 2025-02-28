@@ -1,12 +1,11 @@
 {
   "name": "@reactive-forge/next",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "lint": "eslint \"**/*.ts\"",
-    "build": "tsup",
-    "check-types": "attw --pack ."
+    "build": "tsup && attw --pack ."
   },
   "exports": {
     "import": {
@@ -22,13 +21,14 @@
   "main": "./dist/index.cjs",
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.17.3",
-    "@reactive-forge/eslint-config": "0.0.1",
+    "@reactive-forge/eslint-config": "0.1.0",
     "@reactive-forge/typescript-config": "0.0.3",
-    "eslint": "^8.57.0",
-    "typescript": "^5.5.4"
+    "eslint": "^8",
+    "typescript": "^5.5.4",
+    "tsup": "^8.3.6"
   },
   "dependencies": {
-    "@reactive-forge/codegen": "0.0.5",
+    "@reactive-forge/codegen": "0.1.0",
     "next": "^14 || ^15",
     "webpack": "^5"
   },
