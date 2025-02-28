@@ -1,6 +1,6 @@
 {
   "name": "@reactive-forge/next",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -28,7 +28,7 @@
     "tsup": "^8.3.6"
   },
   "dependencies": {
-    "@reactive-forge/codegen": "0.1.0",
+    "@reactive-forge/codegen": "0.1.2",
     "next": "^14 || ^15",
     "webpack": "^5"
   },
