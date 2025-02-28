@@ -11,7 +11,13 @@ import {
     VariableDeclaration
 } from "ts-morph"
 import {ComponentData} from "./types"
-import {ObjectTypeSchema, PrimitiveTypeSchema, RecordTypeSchema, ValueTypeSchema} from "@reactive-forge/shared"
+import {
+    applySchemaTransforms, mkST,
+    ObjectTypeSchema,
+    PrimitiveTypeSchema,
+    SchemaTransform,
+    ValueTypeSchema
+} from "@reactive-forge/shared"
 
 const isDefined = <T>(v: T | undefined | null): v is T => v !== null && v !== undefined
 const isString = (v: unknown): v is string => v instanceof String || typeof v === "string"
@@ -26,6 +32,30 @@ function calculateOrDefault<T>(calculation: () => T, defaultValue: T)
     }
 }
 
+const mergeUnions = mkST(schema => {
+    if (schema.type !== "union") return null
+
+    const types: ValueTypeSchema[] = []
+
+    schema.types.forEach(type => {
+        if (type.type !== schema.type) {
+            types.push(type)
+            return
+        }
+
+        type.types.forEach(t => types.push(t))
+    })
+
+    return {
+        ...schema,
+        types
+    }
+})
+
+const transforms: SchemaTransform[] = [
+    mergeUnions
+]
+
 function createUtils(project: Project)
 {
     // language=Typescript
@@ -39,7 +69,6 @@ function createUtils(project: Project)
     `
 
     const tmpSourceFile = project.createSourceFile("./__reactive_forge_utils_tmp_file.ts", source)
-
     function getType(name: string)
     {
         return tmpSourceFile.getTypeAliasOrThrow(name).getType()
@@ -62,6 +91,9 @@ function createUtils(project: Project)
         "TrueType",
         "FalseType"
     )
+
+    if (project.getTypeChecker().getTypeText(types.ReactNodeType) === "any")
+        throw new Error("[reactive-forge]: Cannot find react types!")
 
     function callSignatureFromType(type: Type): Signature | undefined {
         const callSignatures = type.getCallSignatures()
@@ -135,7 +167,11 @@ function createUtils(project: Project)
 
         for (const property of type.getProperties()) {
             const paramType = property.getTypeAtLocation(declaration)
-            params[property.getName()] = { ...typeToSchema(paramType, declaration), required: !property.isOptional() }
+            const schema = applySchemaTransforms(
+                typeToSchema(paramType, declaration),
+                transforms
+            )
+            params[property.getName()] = { ...schema, required: !property.isOptional() }
         }
 
         return params
@@ -143,7 +179,8 @@ function createUtils(project: Project)
 
     function typeToSchema(type: Type, node: Node): ValueTypeSchema
     {
-        if (types.ReactNodeType.isAssignableTo(type)) return { type: "element" }
+        if (types.ReactNodeType.isAssignableTo(type))
+            return { type: "element" }
 
         if (type.isArray())
             return {
@@ -164,22 +201,16 @@ function createUtils(project: Project)
                 types: type.getUnionTypes().map(t => typeToSchema(t, node))
             }
 
-        if (typeFlags & ts.TypeFlags.Intersection)
-            return {
-                type: "intersection",
-                types: type.getIntersectionTypes().map(t => typeToSchema(t, node))
-            }
-
         if (typeFlags & ts.TypeFlags.StringLike)
             return sanitizePrimitiveSchema({
                 type: "string",
-                value: literalValueToSchema(literalValue)
+                value: isString(literalValue) ? literalValue : undefined
             })
 
         if (typeFlags & ts.TypeFlags.NumberLike)
             return sanitizePrimitiveSchema({
                 type: "number",
-                value: literalValueToSchema(literalValue)
+                value: isNumber(literalValue) ? literalValue : undefined
             })
 
         if (typeFlags & ts.TypeFlags.BooleanLike)
@@ -196,13 +227,9 @@ function createUtils(project: Project)
             case ts.TypeFlags.Object: {
                 const stringIndexType = indexTypeToSchema(type.getStringIndexType(), "string", node)
 
-                if (stringIndexType)
-                    return stringIndexType
-
                 const numberIndexType = indexTypeToSchema(type.getNumberIndexType(), "number", node)
 
-                if (numberIndexType)
-                    return numberIndexType
+                const indexType = stringIndexType ?? numberIndexType
 
                 const props: ObjectTypeSchema["properties"] = {}
 
@@ -211,29 +238,21 @@ function createUtils(project: Project)
 
                 return {
                     type: "object",
-                    properties: props
+                    properties: props,
+                    index: indexType
                 }
             }
             default: {
-                console.log(`unsupported node: ${type.getFlags()} in unsupported type: ${project.getTypeChecker().getTypeText(type)}`)
                 throw new Error("Unsupported type")
             }
         }
     }
 
-    function literalValueToSchema(value: ReturnType<Type["getLiteralValue"]>): PrimitiveTypeSchema["value"]
-    {
-        if (value === undefined || isString(value) || isNumber(value)) return value
-
-        if ("negative" in value) return undefined
-    }
-
-    function indexTypeToSchema(valueType: Type | undefined, keyType: "string" | "number", node: Node): RecordTypeSchema | undefined
+    function indexTypeToSchema(valueType: Type | undefined, keyType: "string" | "number", node: Node): ObjectTypeSchema["index"] | undefined
     {
         if (valueType === undefined) return undefined
 
         return {
-            type: "record",
             key: keyType,
             value: typeToSchema(valueType, node)
         }
@@ -241,7 +260,7 @@ function createUtils(project: Project)
 
     function sanitizePrimitiveSchema(type: PrimitiveTypeSchema)
     {
-        if (type.value === undefined)
+        if ("value" in type && type.value === undefined)
             delete type.value
 
         return type

@@ -3,7 +3,8 @@ import {
     ArgumentValue,
     ComponentLibrary,
     ComponentSchema,
-    isReactNode,
+    isBoolean, isNumber,
+    isReactNode, isString,
     ValueTypeSchema,
     verifyValue
 } from "@reactive-forge/shared";
@@ -98,10 +99,49 @@ function resolveElementArgs(args: Record<string, ValueConstruct>, argsSchema: Co
     }
 
     for (const prop in argsSchema)
-        if (!usedArgs.has(prop))
+        if (!usedArgs.has(prop) && argsSchema[prop].required)
             throw new Error(`Argument ${prop} not specified`)
 
     return ret
+}
+
+function constructFromSchema(schema: ValueTypeSchema, allowInvalid?: boolean): ValueConstruct | null
+{
+    switch (schema.type) {
+        case "null": return c.null()
+        case "undefined": return c.undefined()
+        case "boolean": return c.boolean(isBoolean(schema.value) ? schema.value ?? false : false)
+        case "number": return c.number(isNumber(schema.value) ? schema.value ?? 0 : 0)
+        case "string": return c.string(isString(schema.value) ? schema.value ?? "" : "")
+        case "date": return c.date(new Date())
+        case "array": return c.array([])
+        case "element": return c.element("$", "Empty", {})
+        case "object": {
+            const props: Record<string, ValueConstruct> = {}
+
+            for (const [propName, propSchema] of Object.entries(schema.properties)) {
+                if (!propSchema.required) continue
+
+                const value = constructFromSchema(propSchema, allowInvalid)
+
+                if (value === null) return null
+
+                props[propName] = value
+            }
+            return c.object(props)
+        }
+        case "union": {
+            for (const type of schema.types)
+            {
+                const value = constructFromSchema(type, allowInvalid)
+                if (value === null) continue
+
+                return value
+            }
+            return null
+        }
+        default: return null
+    }
 }
 
 export const c = {
@@ -121,5 +161,6 @@ export const c = {
         if (!verifyValue(resolvedValue, schema)) throw new Error("Invalid result type")
 
         return resolvedValue
-    }
+    },
+    constructFromSchema
 } as const

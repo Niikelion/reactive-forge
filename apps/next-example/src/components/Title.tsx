@@ -1,3 +1,4 @@
-import {FC} from "react";
+import {FC, ReactNode} from "react";
 
-export const Title: FC<{ title: string }> = ({title}) => <h1>{title}</h1>
+export const Title: FC<{ children?: ReactNode }> = ({children}) => <h1>{children}</h1>
+export const TextTitle: FC<{ title: string }> = ({title}) => <Title>{title}</Title>

@@ -3,7 +3,9 @@ import {extractComponents} from "./extract.js";
 import {GenerateConfig, generateFiles} from "./generate.js";
 
 export type CodegenConfig = {
-    reactTypesFilePath: string
+    debug?: boolean
+    typescriptLibPath: string
+    reactTypesFilePath?: string
     tsConfigFilePath: string
     componentRoots: string[]
 } & GenerateConfig
@@ -11,9 +13,24 @@ export type CodegenConfig = {
 export const createCodegen = async (config: CodegenConfig) => {
     const project = new Project({
         tsConfigFilePath: config.tsConfigFilePath,
-        libFolderPath: config.reactTypesFilePath
+        libFolderPath: config.typescriptLibPath
     })
 
-    const components = await extractComponents(project, config.componentRoots)
-    await generateFiles(project, components, config)
+    if (config.reactTypesFilePath !== undefined) {
+        const f = project.addSourceFileAtPathIfExists(config.reactTypesFilePath)
+        if (f === undefined)
+            console.error("[reactive-forge]: Couldn't find specified react types file!")
+    }
+
+    if (config.debug) {
+        const diagnostics = project.getPreEmitDiagnostics()
+        console.log(project.formatDiagnosticsWithColorAndContext(diagnostics))
+    }
+
+    try {
+        const components = await extractComponents(project, config.componentRoots)
+        await generateFiles(project, components, config)
+    } catch (err) {
+        console.error(err)
+    }
 }

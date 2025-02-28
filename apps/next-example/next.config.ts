@@ -5,7 +5,10 @@ const nextConfig: NextConfig = {
   /* config options here */
 };
 
+// export default nextConfig
+
 export default withReactiveForge({
     componentRoots: [ "src/components" ],
-    baseDir: "src"
+    baseDir: "src",
+    typescriptLibPath: "../../node_modules/typescript/lib"
 })(nextConfig);

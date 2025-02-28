@@ -29,14 +29,15 @@ export const withReactiveForge = (reactiveForgeConfig: ReactiveForgePluginConfig
             const rootDir = reactiveForgeConfig?.rootDir ?? projectRootDir
             const baseDir = reactiveForgeConfig?.baseDir ?? "./src"
             const tsConfigFilePath = reactiveForgeConfig?.tsConfigFilePath ?? path.resolve(rootDir, "./tsconfig.app.json")
-            const reactTypesFilePath = reactiveForgeConfig?.reactTypesFilePath ?? path.resolve(rootDir, "./node_modules/typescript/lib")
+            const typescriptLibPath = reactiveForgeConfig?.typescriptLibPath ?? path.resolve(rootDir, "./node_modules/typescript/lib")
             const outDir = reactiveForgeConfig?.outDir ?? path.resolve(rootDir, "./reactive-forge")
             const componentRoots = reactiveForgeConfig?.componentRoots ?? [baseDir]
             const pathPrefix = reactiveForgeConfig?.pathPrefix ?? "@/"
 
             config.plugins.push(new ReactiveForgeWebpackPlugin({
+                ...reactiveForgeConfig,
                 tsConfigFilePath,
-                reactTypesFilePath,
+                typescriptLibPath,
                 outDir,
                 rootDir,
                 baseDir,
