@@ -2,11 +2,12 @@ import {Project, SourceFile} from "ts-morph";
 import {ComponentData} from "./types";
 import path from "path";
 import fs from "fs/promises";
+import {Logger} from "./utils";
 
-async function saveFileIfChanged(file: SourceFile): Promise<void> {
+async function saveFileIfChanged(file: SourceFile, logger: Logger): Promise<void> {
     if (!await fileContentChanged(file.getFilePath(), file.getFullText())) return
 
-    console.log(`[reactive-forge]: Updating ${file.getFilePath()}`)
+    logger.info(`Updating ${file.getFilePath()}`)
     await file.save()
 }
 
@@ -26,7 +27,7 @@ export type GenerateConfig = {
     pathPrefix: string
 }
 
-export async function generateFiles(project: Project, components: ComponentData[], { outDir, rootDir, baseDir, pathPrefix }: GenerateConfig)
+export async function generateFiles(project: Project, components: ComponentData[], { outDir, rootDir, baseDir, pathPrefix }: GenerateConfig, logger: Logger)
 {
     type ImportInstance = {
         names: Set<string>
@@ -98,7 +99,7 @@ export async function generateFiles(project: Project, components: ComponentData[
         resultFile.addStatements(`export const __file = new ComponentFile(\n\t"${pathPrefix}${filePath}",\n\t{\n${module.components.map(c => `\t\t${c.name}: {\n\t\t\tcomponent: ${c.name} as FC,\n\t\t\targs: ${JSON.stringify(c.args)}\n\t}`).join(", ")}\n\t}\n)`)
         resultFile.formatText()
 
-        await saveFileIfChanged(resultFile)
+        await saveFileIfChanged(resultFile, logger)
     }
 
     const aggregateFile = project.createSourceFile(path.resolve(outDir, "./index.ts"), "", { overwrite: true })
@@ -128,5 +129,5 @@ export async function generateFiles(project: Project, components: ComponentData[
 
     aggregateFile.addStatements(`export const components = new ComponentLibrary(\n${libraryFiles.map(f => `\t${f}`).join(",\n")}\n);`)
 
-    await saveFileIfChanged(aggregateFile)
+    await saveFileIfChanged(aggregateFile, logger)
 }

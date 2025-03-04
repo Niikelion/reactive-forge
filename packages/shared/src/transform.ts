@@ -1,3 +1,4 @@
+import assert from "assert";
 import {ObjectTypeSchema, ValueTypeSchema} from "./schema";
 
 export type SchemaTransform = {
@@ -49,15 +50,122 @@ export function transformSchema(schema: ValueTypeSchema, transform: (schema: Val
                     [propName, { ...transformSchema(propSchema, transform, topdown), required }]
                 )
             )
-            const index = schema.index === undefined ? undefined : {
-                ...schema.index,
-                value: transformSchema(schema.index.value, transform, topdown)
-            } satisfies NonNullable<ObjectTypeSchema["index"]>
-            return applyBottomUp({...schema, properties, index})
+            const stringIndex = schema.stringIndex === undefined ? undefined : transformSchema(schema.stringIndex, transform, topdown)
+            const numberIndex = schema.numberIndex === undefined ? undefined : transformSchema(schema.numberIndex, transform, topdown)
+
+            return applyBottomUp({...schema, properties, stringIndex, numberIndex})
         }
         case "union": {
             const types = schema.types.map(t => transformSchema(t, transform, topdown))
             return applyBottomUp({ ...schema, types })
         }
     }
+}
+
+function intersectionOfValues<T>(a: T | undefined, b: T | undefined) {
+    if (a === undefined || b === undefined || a === b)
+        return a ?? b
+
+    throw new Error(`Cannot merge ${a} and ${b}`)
+}
+
+function intersectionOfOptionals(a: ValueTypeSchema | undefined, b: ValueTypeSchema | undefined) {
+    if (a === undefined || b === undefined)
+        return a ?? b
+
+    return intersectionOfSchemas(a, b)
+}
+
+function intersectionOfProperties(a: ObjectTypeSchema["properties"], b: ObjectTypeSchema["properties"]) {
+    const props: ObjectTypeSchema["properties"] = {}
+
+    const allProps = new Set<string>([...Object.keys(a), ...Object.keys(b)])
+
+    for (const prop of allProps.values()) {
+        const schema = intersectionOfOptionals(a[prop], b[prop])!
+        props[prop] = {
+            ...schema,
+            required: (a[prop]?.required ?? false) || (b[prop]?.required ?? false)
+        }
+    }
+
+    return props
+}
+
+export function intersectionOfSchemas(...schemas: ValueTypeSchema[]): ValueTypeSchema {
+    return schemas.reduce((accSchema, currentSchema): ValueTypeSchema => {
+        if (accSchema.type === "union") {
+            const merged = accSchema.types.map(schema => {
+                try {
+                    return intersectionOfSchemas(schema, currentSchema)
+                } catch {
+                    return null
+                }
+            }).filter(s => s !== null)
+
+            if (merged.length === 0)
+                throw new Error("None of the union variants matched")
+
+            return {
+                type: "union",
+                types: merged
+            }
+        }
+        if (currentSchema.type === "union")
+            return intersectionOfSchemas(currentSchema, accSchema) //flip parameters and let previous "if" do the work
+
+        if (accSchema.type !== currentSchema.type) throw new Error(`Cannot merge ${accSchema.type} and ${currentSchema.type}`)
+
+        switch (accSchema.type) {
+            case "null":
+            case "undefined":
+            case "date":
+            case "element":
+                return accSchema
+            case "boolean": {
+                assert(currentSchema.type === accSchema.type)
+                return {
+                    type: accSchema.type,
+                    value: intersectionOfValues(accSchema.value, currentSchema.value)
+                }
+            }
+            case "number": {
+                assert(currentSchema.type === accSchema.type)
+                return {
+                    type: accSchema.type,
+                    value: intersectionOfValues(accSchema.value, currentSchema.value)
+                }
+            }
+            case "string": {
+                assert(currentSchema.type === accSchema.type)
+                return {
+                    type: accSchema.type,
+                    value: intersectionOfValues(accSchema.value, currentSchema.value)
+                }
+            }
+            case "array": {
+                assert(currentSchema.type === accSchema.type)
+                return {
+                    type: accSchema.type,
+                    elementType: intersectionOfSchemas(accSchema.elementType, currentSchema.elementType)
+                }
+            }
+            case "object":
+            {
+                assert(currentSchema.type === accSchema.type)
+
+                const stringIndex = intersectionOfOptionals(accSchema.stringIndex, currentSchema.stringIndex)
+                const numberIndex = intersectionOfOptionals(accSchema.numberIndex, currentSchema.numberIndex)
+
+                const properties = intersectionOfProperties(accSchema.properties, currentSchema.properties)
+
+                return {
+                    type: "object",
+                    properties,
+                    stringIndex,
+                    numberIndex
+                }
+            }
+        }
+    })
 }

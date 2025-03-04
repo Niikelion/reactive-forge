@@ -9,3 +9,6 @@ export const WithOmit: FC<{ v: Omit<Foo, "a"> }> = () => null
 export const WithPick: FC<{ v: Pick<Foo, "a"> }> = () => null
 export const WithMappedType: FC<{ v: Mapped<Foo> }> = () => null
 export const WithMappedRecordType: FC<{ v: Mapped<Record<number, null>> }> = () => null
+
+type Cyclic = number | Cyclic[]
+export const WithCyclicType: FC<{ v: Cyclic }> = () => null

@@ -35,7 +35,7 @@ export const DropdownInput: FC<ValueInputProps<number> & { options: string[] }> 
         {error}
         <select value={options[value]} onChange={e => onValueChanged(e.currentTarget.selectedIndex)}>
             {options.map(option =>
-                <option value={option}>{option}</option>
+                <option key={option} value={option}>{option}</option>
             )}
         </select>
     </label>
