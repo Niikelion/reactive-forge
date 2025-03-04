@@ -1,6 +1,6 @@
 import {createContext, FC, ReactNode, useContext, useEffect, useMemo, useRef, useState} from "react";
 import {c, NonConstructValue, ValueConstruct} from "../constructs";
-import {ArgumentValue, ComponentLibrary, ObjectTypeSchema, ValueTypeSchema, verifyValue} from "@reactive-forge/shared";
+import {ArgumentValue, ComponentLibrary, ValueTypeSchema, verifyValue} from "@reactive-forge/shared";
 import {useComponentLibrary} from "./ComponentLibraryProvider";
 
 export class ComponentContext {
