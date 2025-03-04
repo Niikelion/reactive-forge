@@ -8,6 +8,7 @@ Can be used to create component library preview or ui designer with components i
 
 * Extraction of component metadata
 * Rendering the component from metadata and argument values with typechecking
+* Easily creating preview of your component with option to edit arguments from the ui
 
 ## Getting started
 
