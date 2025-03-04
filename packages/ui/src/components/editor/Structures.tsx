@@ -102,7 +102,7 @@ export const Construct: FC<{ schema: ValueTypeSchema, value: ValueConstruct, onV
                 return aN < bN ? -1 : 1
             })
 
-            const indexProps = [...(schema.index === undefined ? [] : Object.entries(correctedValue))]
+            const indexProps = [...Object.entries(correctedValue)]
                 .filter(([n]) => !(n in schema.properties))
                 .sort(([a], [b]) => a < b ? -1 : 1)
 
@@ -117,8 +117,10 @@ export const Construct: FC<{ schema: ValueTypeSchema, value: ValueConstruct, onV
             function getNewValue(name: string) {
                 if (name in objectSchema.properties)
                     return c.constructFromSchema(objectSchema.properties[name])
-                if (objectSchema.index !== undefined)
-                    return c.constructFromSchema(objectSchema.index.value)
+                if (objectSchema.numberIndex !== undefined && !isNaN(Number(name)))
+                    return c.constructFromSchema(objectSchema.numberIndex)
+                if (objectSchema.stringIndex !== undefined)
+                    return c.constructFromSchema(objectSchema.stringIndex)
                 return null
             }
 
@@ -131,6 +133,10 @@ export const Construct: FC<{ schema: ValueTypeSchema, value: ValueConstruct, onV
             function renameProp(oldName: string, newName: string) {
                 if (oldName in objectSchema.properties || newName in objectSchema.properties)
                     return
+
+                if (isNaN(Number(oldName)) !== isNaN(Number(newName)))
+                    return
+
                 if (!(oldName in correctedValue)) {
                     addProp(newName)
                     return
@@ -155,6 +161,13 @@ export const Construct: FC<{ schema: ValueTypeSchema, value: ValueConstruct, onV
                 onValueChanged(newValue)
             }
 
+            function getIndexSchema(name: string) {
+                if (objectSchema.numberIndex !== undefined && !isNaN(Number(name)))
+                    return objectSchema.numberIndex
+
+                return objectSchema.stringIndex
+            }
+
             return <EditorUI.List key={schema.type} type="unordered">
                 {objectProps.map(([propName, propSchema]) =>
                     {
@@ -173,20 +186,21 @@ export const Construct: FC<{ schema: ValueTypeSchema, value: ValueConstruct, onV
                         </EditorUI.ObjectPropertyInput>;
                     }
                 )}
-                {objectSchema.index !== undefined && indexProps.map(([propName, propValue]) =>
-                    <EditorUI.ObjectIndexInput
+                {indexProps.map(([propName, propValue]) => {
+                    const indexSchema = getIndexSchema(propName)
+                    return <EditorUI.ObjectIndexInput
                         name={propName}
                         key={`index__${propName}`}
                         onRename={newName => renameProp(propName, newName)}
                         onDelete={() => deleteProp(propName)}
                     >
-                        <Construct
-                            schema={objectSchema.index!.value}
+                        {indexSchema && <Construct
+                            schema={indexSchema}
                             value={propValue}
                             onValueChanged={v => updateProp(propName, v)}
-                        />
-                    </EditorUI.ObjectIndexInput>
-                )}
+                        />}
+                    </EditorUI.ObjectIndexInput>;
+                })}
             </EditorUI.List>
         }
         case "union":  {

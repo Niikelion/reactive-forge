@@ -1,5 +1,4 @@
-import type { NextConfig } from "next";
-import { withReactiveForge } from "@reactive-forge/next";
+import type { NextConfig } from "next"
 
 const nextConfig: NextConfig = {
   /* config options here */
@@ -7,8 +6,4 @@ const nextConfig: NextConfig = {
 
 // export default nextConfig
 
-export default withReactiveForge({
-    componentRoots: [ "src/components" ],
-    baseDir: "src",
-    typescriptLibPath: "../../node_modules/typescript/lib"
-})(nextConfig);
+export default nextConfig

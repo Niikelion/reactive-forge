@@ -22,10 +22,8 @@ export type ArrayTypeSchema = {
 export type ObjectTypeSchema = {
     type: "object"
     properties: Record<string, ValueTypeSchema & { required: boolean }>
-    index?: {
-        key: "string" | "number"
-        value: ValueTypeSchema
-    }
+    stringIndex?: ValueTypeSchema
+    numberIndex?: ValueTypeSchema
 }
 export type UnionTypeSchema = {
     type: "union"
@@ -103,27 +101,26 @@ export function verifyValue(value: ArgumentValue, schema: ValueTypeSchema): bool
         case "object": {
             if (!isObject(value)) return false
 
-            if (schema.index === undefined) {
-                const definedProperties = new Set<string>(Object.keys(schema.properties))
-                for (const prop in value)
-                    if (!definedProperties.has(prop))
-                        return false
-            }
+            const hasAllRequiredProperties = [...Object.entries(schema.properties)].every(([propName, propSchema]) =>
+                (propName in value) || !propSchema.required)
 
-            const hasAllRequiredProperties = [...Object.entries(schema.properties)].every(([propName, propSchema]) => {
-                if (!(propName in value)) return !propSchema.required
-                return true
-            })
-
+            // Check that every required property is provided
             if (!hasAllRequiredProperties) return false
 
             return [...Object.entries(value)].every(([propName, propValue]) => {
-                if (propName in schema.properties)
-                    return verifyValue(propValue, schema.properties[propName])
-                if (schema.index === undefined) return false
+                // If explicitly defined, check if schema matches
+                if (propName in schema.properties && !verifyValue(propValue, schema.properties[propName]))
+                    return false
 
-                if (schema.index.key === "number" && isNaN(Number(propName))) return false
-                return verifyValue(propValue, schema.index.value)
+                // If number index exists and index is number, verify with schema from number index
+                if (schema.numberIndex !== undefined && !isNaN(Number(propName)))
+                    return verifyValue(propValue, schema.numberIndex)
+
+                // If string index exists, check verify with schema from number index
+                if (schema.stringIndex !== undefined)
+                    return verifyValue(propValue, schema.stringIndex)
+
+                return true
             })
         }
         case "union": return schema.types.some(s => verifyValue(value, s))
@@ -140,6 +137,5 @@ export function isConstantValueSchema(schema: ValueTypeSchema): boolean {
         case "string":
             return schema.value !== undefined
     }
-    console.log({schema})
     return false
 }

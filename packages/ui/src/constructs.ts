@@ -4,10 +4,11 @@ import {
     ComponentLibrary,
     ComponentSchema,
     isBoolean, isNumber,
-    isReactNode, isString,
+    isReactNode, isString, ObjectTypeSchema,
     ValueTypeSchema,
     verifyValue
 } from "@reactive-forge/shared";
+import {z, ZodType} from "zod";
 
 type Construct<Type extends string, Value> = { type: Type, value: Value }
 
@@ -31,6 +32,37 @@ export type ValueConstruct = NullConstruct | UndefinedConstruct | BooleanConstru
 function construct<T extends ValueConstruct["type"]>(type: T, value: (ValueConstruct & { type: T })["value"])
 {
     return { type, value }
+}
+
+function zodConstruct<Type extends string, Value>(type: Type, value: z.ZodType<Value>) {
+    return z.object({ type: z.literal(type), value })
+}
+
+export const constructSchema = {
+    null: zodConstruct("null", z.null()),
+    undefined: zodConstruct("undefined", z.undefined()),
+    boolean: zodConstruct("boolean", z.boolean()),
+    number: zodConstruct("number", z.number()),
+    string: zodConstruct("string", z.string()),
+    date: zodConstruct("date", z.string()),
+    array: zodConstruct("array", z.lazy((): ZodType<ValueConstruct> => constructSchema.value).array()),
+    object: zodConstruct("object", z.record(z.lazy((): ZodType<ValueConstruct> => constructSchema.value))),
+    element: zodConstruct("element", z.object({
+        path: z.string(),
+        name: z.string(),
+        args: z.record(z.lazy((): ZodType<ValueConstruct> => constructSchema.value))
+    })),
+    value: z.lazy((): ZodType<ValueConstruct> => z.union([
+        constructSchema.null,
+        constructSchema.undefined,
+        constructSchema.boolean,
+        constructSchema.null,
+        constructSchema.string,
+        constructSchema.date,
+        constructSchema.array,
+        constructSchema.object,
+        constructSchema.element
+    ]))
 }
 
 export type NonConstructValue = {
@@ -162,5 +194,9 @@ export const c = {
 
         return resolvedValue
     },
-    constructFromSchema
+    constructFromSchema,
+    argsConstructsFromSchema(argsSchema: ObjectTypeSchema["properties"]) {
+        const props = [...Object.entries(argsSchema)].filter(([,{ required }]) => required)
+        return Object.fromEntries(props.map(([propName, propSchema]) => [propName, c.constructFromSchema(propSchema, true) ?? c.undefined()]))
+    }
 } as const

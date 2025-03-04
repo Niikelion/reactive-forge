@@ -8,11 +8,11 @@ import {
     Symbol,
     ts,
     Type,
-    VariableDeclaration, Writers
+    VariableDeclaration
 } from "ts-morph"
 import {ComponentData} from "./types"
 import {
-    applySchemaTransforms, mkST,
+    applySchemaTransforms, intersectionOfSchemas, mkST,
     ObjectTypeSchema,
     PrimitiveTypeSchema,
     SchemaTransform,
@@ -58,7 +58,6 @@ const transforms: SchemaTransform[] = [
 
 function createUtils(project: Project)
 {
-    // language=Typescript
     const source = `
         import {FC, ReactNode, JSX} from "react"
         export type ComponentReturnType = ReturnType<FC> | JSX.Element
@@ -161,20 +160,12 @@ function createUtils(project: Project)
 
         const type = propsSymbol.getTypeAtLocation(declaration)
 
-        if (!type.isObject()) throw new Error("Type is not an object")
+        const paramsSchema = applySchemaTransforms(typeToSchema(type, declaration), transforms)
 
-        const params: ComponentData["args"] = {}
+        if (paramsSchema.type !== "object")
+            throw new Error("Props type is not an object")
 
-        for (const property of type.getProperties()) {
-            const paramType = property.getTypeAtLocation(declaration)
-            const schema = applySchemaTransforms(
-                typeToSchema(paramType, declaration),
-                transforms
-            )
-            params[property.getName()] = { ...schema, required: !property.isOptional() }
-        }
-
-        return params
+        return paramsSchema.properties
     }
 
     function typeToSchema(type: Type, node: Node): ValueTypeSchema
@@ -200,6 +191,8 @@ function createUtils(project: Project)
                 type: "union",
                 types: type.getUnionTypes().map(t => typeToSchema(t, node))
             }
+        if (typeFlags & ts.TypeFlags.Intersection)
+            return intersectionOfSchemas(...type.getIntersectionTypes().map(t => typeToSchema(t, node)))
 
         if (typeFlags & ts.TypeFlags.StringLike)
             return sanitizePrimitiveSchema({
@@ -224,22 +217,16 @@ function createUtils(project: Project)
             case ts.TypeFlags.Undefined:
                 return { type: "undefined" }
             case ts.TypeFlags.Object: {
-                const stringIndexType = indexTypeToSchema(type.getStringIndexType(), "string", node)
+                const stringIndex = indexTypeToSchema(type.getStringIndexType(), node)
+                const numberIndex = indexTypeToSchema(type.getNumberIndexType(), node)
 
-                const numberIndexType = indexTypeToSchema(type.getNumberIndexType(), "number", node)
-
-                const indexType = stringIndexType ?? numberIndexType
-
-                const props: ObjectTypeSchema["properties"] = {}
+                const properties: ObjectTypeSchema["properties"] = {}
 
                 for (const prop of type.getProperties()) {
                     const required = !prop.isOptional()
 
                     try {
-                        props[prop.getName()] = {
-                            ...typeToSchema(prop.getTypeAtLocation(node), node),
-                            required
-                        }
+                        properties[prop.getName()] = { ...typeToSchema(prop.getTypeAtLocation(node), node), required }
                     } catch (err) {
                         if (required) throw err
                     }
@@ -247,25 +234,23 @@ function createUtils(project: Project)
 
                 return {
                     type: "object",
-                    properties: props,
-                    index: indexType
+                    properties,
+                    stringIndex,
+                    numberIndex
                 }
             }
             default: {
-                throw new Error("Unsupported type")
+                throw new Error(`Unsupported type ${type.getText()}`)
             }
         }
     }
 
-    function indexTypeToSchema(valueType: Type | undefined, keyType: "string" | "number", node: Node): ObjectTypeSchema["index"] | undefined
+    function indexTypeToSchema(valueType: Type | undefined, node: Node): ValueTypeSchema | undefined
     {
         if (valueType === undefined) return undefined
 
         try {
-            return {
-                key: keyType,
-                value: typeToSchema(valueType, node)
-            }
+            typeToSchema(valueType, node)
         } catch {
             return undefined
         }

@@ -6,7 +6,6 @@ import {FC} from "react";
 const ComponentPreview: FC<{ path: string, name: string }> = ({ path, name }) => {
     const preview = useComponentPreview(path, name)
     if (preview === null) return null
-    
     const { editorProps, rendererProps } = preview
     
     return <div>
