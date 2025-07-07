@@ -39,6 +39,8 @@ export function fillConfig(config: ForgeConfig, projectRootDir: string = "./"): 
 export const createCodegen = async (config: CodegenConfig, logger?: ReturnType<typeof createLogger>) => {
     logger ??= createLogger({ silent: false, prefix: true })
 
+    const logParseFinished = logger.timing("Parsed project", true)
+
     const project = new Project({
         tsConfigFilePath: config.tsConfigFilePath,
         libFolderPath: config.typescriptLibPath
@@ -50,16 +52,19 @@ export const createCodegen = async (config: CodegenConfig, logger?: ReturnType<t
             logger.error("Couldn't find specified react types file!")
     }
 
+    logParseFinished()
+
     if (config.debug) {
         const diagnostics = project.getPreEmitDiagnostics()
-        logger.error(project.formatDiagnosticsWithColorAndContext(diagnostics))
+        if (diagnostics.length > 0)
+            logger.error(project.formatDiagnosticsWithColorAndContext(diagnostics))
     }
 
     try {
-        const logFinished = logger.timing("Extracted components", true)
-        const components = await extractComponents(project, config.componentRoots)
+        const logExtractFinished = logger.timing("Extracted components", true)
+        const components = await extractComponents(project, config.componentRoots, logger)
         await generateFiles(project, components, config, logger)
-        logFinished()
+        logExtractFinished()
     } catch (err) {
         logger.error(err instanceof Error ? err.toString() : "Unknown error")
     }

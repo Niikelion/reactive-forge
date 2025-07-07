@@ -1,6 +1,6 @@
 import {createContext, FC, ReactNode, useContext, useEffect, useMemo, useRef, useState} from "react";
 import {c, NonConstructValue, ValueConstruct} from "../constructs";
-import {ArgumentValue, ComponentLibrary, ValueTypeSchema, verifyValue} from "@reactive-forge/shared";
+import {ArgumentValue, arrayTypeAtIndex, ComponentLibrary, ValueTypeSchema, verifyValue} from "@reactive-forge/shared";
 import {useComponentLibrary} from "./ComponentLibraryProvider";
 
 export class ComponentContext {
@@ -33,22 +33,29 @@ export class ComponentContext {
             return verifyValue(this.resolve(value, schema), schema)
 
         switch (schema.type) {
+            case "void":
+            case "never": return false
+            case "unknown":
+            case "any": return true
             case "null":
             case "undefined":
             case "date":
             case "element":
-                return value.type === schema.type
+                return ["element", "string", "number", "boolean", "null", "undefined"].includes(value.type)
             case "boolean":
                 return value.type === "boolean" && (schema.value === undefined || schema.value === value.value)
             case "number":
                 return value.type === "number" && (schema.value === undefined || schema.value === value.value)
+            case "bigint":
+                return value.type === "bigint" && (schema.value === undefined || schema.value === value.value)
             case "string":
                 return value.type === "string" && (schema.value === undefined || schema.value === value.value)
             case "array": {
                 if (value.type !== "array") return false
+                if (value.value.length < schema.tupleTypes.length) return false
 
-                for (const val of value.value)
-                    if (!this.verify(val, schema.elementType))
+                for (let i=0; i<value.value.length; ++i)
+                    if (!this.verify(value.value[i], arrayTypeAtIndex(schema, i)))
                         return false
 
                 return true
@@ -67,13 +74,9 @@ export class ComponentContext {
                     if (propName in schema.properties && !this.verify(propValue, schema.properties[propName]))
                         return false
 
-                    // If number index exists and index is number, verify with schema from number index
-                    if (schema.numberIndex !== undefined && !isNaN(Number(propName)))
-                        return this.verify(propValue, schema.numberIndex)
-
                     // If string index exists, check verify with schema from number index
-                    if (schema.stringIndex !== undefined)
-                        return this.verify(propValue, schema.stringIndex)
+                    if (schema.index !== undefined)
+                        return this.verify(propValue, schema.index)
 
                     return true
                 })
@@ -85,6 +88,7 @@ export class ComponentContext {
 
                 return false
             }
+            case "function": return false
         }
     }
 }

@@ -6,7 +6,6 @@
     "access": "public"
   },
   "files": [
-    "base.json",
-    "package.json"
+    "base.json"
   ]
 }

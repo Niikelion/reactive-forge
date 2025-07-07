@@ -1,6 +1,7 @@
 import type { ForgeConfig } from "@reactive-forge/codegen"
 
 export default {
+	debug: true,
 	rootDir: ".",
 	baseDir: "src",
 	componentRoots: ["src/components"],

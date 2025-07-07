@@ -12,12 +12,13 @@ import {
 } from "ts-morph"
 import {ComponentData} from "./types"
 import {
-    applySchemaTransforms, intersectionOfSchemas, mkST,
+    applySchemaTransforms, intersectionOfSchemas, isBigInt, mkST,
     ObjectTypeSchema,
-    PrimitiveTypeSchema,
+    s,
     SchemaTransform,
     ValueTypeSchema
 } from "@reactive-forge/shared"
+import {Logger} from "./utils";
 
 const isDefined = <T>(v: T | undefined | null): v is T => v !== null && v !== undefined
 const isString = (v: unknown): v is string => v instanceof String || typeof v === "string"
@@ -46,22 +47,96 @@ const mergeUnions = mkST(schema => {
         type.types.forEach(t => types.push(t))
     })
 
-    return {
-        ...schema,
-        types
+    return s.union(...types)
+})
+
+const cleanupLiterals = mkST(schema => {
+    switch (schema.type) {
+        case "boolean":
+        case "number":
+        case "bigint":
+        case "string": {
+            if (schema.value === undefined)
+                return { type: schema.type }
+            return schema
+        }
+        case "union": {
+            if (!schema.types.some(t => t.type === "boolean" && t.value === true) || !schema.types.some(t => t.type === "boolean" && t.value === false))
+                return null
+
+            const types = [...schema.types.filter(t => t.type !== "boolean"), s.boolean(undefined)]
+            if (types.length === 0) return s.never()
+            return s.union(...types)
+        }
+        default: return null
     }
 })
 
+const stripOptionalUndefined = mkST(schema => {
+    if (schema.type !== "object") return null
+
+    const properties = Object.fromEntries([...Object.entries(schema.properties)].filter(([, p]) => p.required || p.type !== "undefined").map(([k, p]) => {
+        if (p.required || (p.type !== "union" || !p.types.some(p => p.type === "undefined"))) return [k, p]
+
+        const types = p.types.filter(p => p.type !== "undefined")
+
+        return [k, { required: false, ...s.union(...types) }]
+    }))
+    const index = schema.index?.type !== "undefined" ? schema.index : undefined
+    return s.object(properties, index)
+})
+
+const stripNever = mkST(schema => {
+    switch (schema.type) {
+        case "union": {
+            const types = schema.types.filter(t => t.type !== "never")
+            if (types.length === 0) return s.never()
+            if (types.length === schema.types.length) return null
+            return s.union(...types)
+        }
+        case "object": {
+            const properties = Object.entries(schema.properties)
+            const index = schema.index
+
+            const strippedProperties = properties.filter(([_, t]) => t.required || t.type !== "never")
+
+            return s.object(Object.fromEntries(strippedProperties), index?.type !== "never" ? index : undefined)
+        }
+        default: return null
+    }
+})
+
+const stripSingleElementUnions = mkST(schema => {
+    if (schema.type !== "union") return null
+    if (schema.types.length === 1) return schema.types[0]
+    return null
+})
+
 const transforms: SchemaTransform[] = [
-    mergeUnions
+    mergeUnions,
+    cleanupLiterals,
+    stripOptionalUndefined,
+    stripNever,
+    stripSingleElementUnions
 ]
 
-function createUtils(project: Project)
+class CyclicError extends Error {
+    readonly symbol: Symbol
+
+    constructor(message: string, symbol: Symbol) {
+        super(message)
+        this.symbol = symbol
+    }
+}
+
+function createUtils(project: Project, logger: Logger)
 {
     const source = `
-        import {FC, ReactNode, JSX} from "react"
+        import {FC, ReactNode, JSX, CSSProperties} from "react"
         export type ComponentReturnType = ReturnType<FC> | JSX.Element
         export type ReactNodeType = ReactNode
+        export type CSSPropertiesType = CSSProperties
+        export type HTMLElementType = HTMLElement
         export type DateType = Date
         export type TrueType = true
         export type FalseType = false
@@ -86,6 +161,8 @@ function createUtils(project: Project)
     const types = extractTypes(
         "ComponentReturnType",
         "ReactNodeType",
+        "CSSPropertiesType",
+        "HTMLElementType",
         "DateType",
         "TrueType",
         "FalseType"
@@ -136,13 +213,39 @@ function createUtils(project: Project)
     {
         const name = symbol.getDeclarations()[0].getFirstChild(n => n.isKind(ts.SyntaxKind.Identifier))!.getText()
 
-        if (signature === undefined) return null
+        logger.debug(`Extracting "${name}"`)
 
-        if (!verifySignature(signature)) return null
+        if (signature === undefined) {
+            logger.debug("No signature")
+            return null
+        }
 
-        const args = calculateOrDefault(() => extractParameters(signature.getParameters()[0]), null)
+        if (!verifySignature(signature)) {
+            logger.debug("Unsupported signature type")
+            return null
+        }
 
-        if (args === null) return null
+        const args = calculateOrDefault(() => {
+            try {
+                return extractParameters(signature.getParameters()[0])
+            } catch (err) {
+                if (err instanceof Error) {
+                    if (err.stack)
+                        logger.debug(err.stack)
+                    logger.debug(err.toString())
+                }
+                else
+                    logger.debug(JSON.stringify(err))
+                throw err
+            }
+        }, null)
+
+        if (args === null) {
+            logger.debug("Failed to extract parameters")
+            return null
+        }
+
+        logger.debug(`Finished extracting "${name}"`)
 
         return {
             symbol,
@@ -160,108 +263,124 @@ function createUtils(project: Project)
 
         const type = propsSymbol.getTypeAtLocation(declaration)
 
-        const paramsSchema = applySchemaTransforms(typeToSchema(type, declaration), transforms)
+        const paramsSchema = applySchemaTransforms(typeToSchema(type, declaration, new Set<Symbol>(), "$"), transforms)
 
-        if (paramsSchema.type !== "object")
+        if (paramsSchema.type !== "object") {
+            logger.debug(`Wrong type of the first parameter, expected object, got ${paramsSchema.type}`)
             throw new Error("Props type is not an object")
+        }
 
         return paramsSchema.properties
     }
 
-    function typeToSchema(type: Type, node: Node): ValueTypeSchema
+    function typeToSchema(type: Type, node: Node, visited: Set<Symbol>, path: string): ValueTypeSchema
     {
-        if (types.ReactNodeType.isAssignableTo(type))
-            return { type: "element" }
+        const symbol = type.getSymbol()
 
-        if (type.isArray())
-            return {
-                type: "array",
-                elementType: typeToSchema(type.getArrayElementType()!, node)
+        if (symbol) {
+            if (visited.has(symbol)) throw new CyclicError("Detected circular type", symbol)
+            visited.add(symbol)
+        }
+
+        try {
+            if (types.ReactNodeType.isAssignableTo(type))
+                return s.element()
+            if (types.CSSPropertiesType.isAssignableTo(type) && type.isAssignableTo(types.CSSPropertiesType)) {
+                logger.debug(`${path}: CSSProperties detected, but not supported`)
+                return s.object({})
+            }
+            if (type.isAssignableTo(types.HTMLElementType)) {
+                logger.debug(`${path}: HTMLElement detected, but not supported`)
+                return s.never()
             }
 
-        if (type.isAssignableTo(types.DateType))
-            return { type: "date" }
-
-        const literalValue = type.getLiteralValue()
-
-        const typeFlags = type.getFlags()
-
-        if (typeFlags & ts.TypeFlags.Union)
-            return {
-                type: "union",
-                types: type.getUnionTypes().map(t => typeToSchema(t, node))
+            if (type.isClass()) {
+                logger.debug(`${path}: class detected, but not supported`)
+                return s.never()
             }
-        if (typeFlags & ts.TypeFlags.Intersection)
-            return intersectionOfSchemas(...type.getIntersectionTypes().map(t => typeToSchema(t, node)))
 
-        if (typeFlags & ts.TypeFlags.StringLike)
-            return sanitizePrimitiveSchema({
-                type: "string",
-                value: isString(literalValue) ? literalValue : undefined
-            })
+            const signature = type.getCallSignatures()[0]
 
-        if (typeFlags & ts.TypeFlags.NumberLike)
-            return sanitizePrimitiveSchema({
-                type: "number",
-                value: isNumber(literalValue) ? literalValue : undefined
-            })
-        if (typeFlags & ts.TypeFlags.BooleanLike)
-            return sanitizePrimitiveSchema({
-                type: "boolean",
-                value: type.isAssignableTo(types.TrueType) ? true : type.isAssignableTo(types.FalseType) ? false : undefined
-            })
+            if (signature !== undefined) {
+                //const argumentTypes = signature.getParameters().map((p, i) => typeToSchema(p.getTypeAtLocation(node), node, visited, `${path}(${i}:${p.getName()})`))
+                const returnType = typeToSchema(signature.getReturnType(), node, visited, `${path}(R)`)
 
-        switch (type.getFlags()) {
-            case ts.TypeFlags.Null:
-                return { type: "null" }
-            case ts.TypeFlags.Undefined:
-                return { type: "undefined" }
-            case ts.TypeFlags.Object: {
-                const stringIndex = indexTypeToSchema(type.getStringIndexType(), node)
-                const numberIndex = indexTypeToSchema(type.getNumberIndexType(), node)
+                return s.never()
+                // return s.function(returnType)
+            }
 
+            if (type.isTuple()) {
+                const tupleElements = type.getTupleElements()!
+
+                const hasElementType = type.getProperty((tupleElements.length - 1).toString()) === undefined
+
+                const tupleTypes = tupleElements.map((t, i) => typeToSchema(t, node, visited, `${path}[${i === tupleElements.length - 1 && hasElementType ? "number" : i}]`))
+                const elementType = hasElementType ? tupleTypes.splice(tupleTypes.length - 1, 1)[0] : undefined
+
+                return {
+                    type: "array",
+                    tupleTypes,
+                    elementType
+                }
+            }
+            if (type.isArray())
+                return s.array(typeToSchema(type.getArrayElementType()!, node, visited, `${path}[]`))
+            if (type.isAssignableTo(types.DateType))
+                return s.date()
+
+            const literalValue = type.getLiteralValue()
+
+            const typeFlags = type.getFlags()
+
+            if (type.isIntersection())
+                return intersectionOfSchemas(...type.getIntersectionTypes().map((t, i) => typeToSchema(t, node, visited, `${path}&>${i}`)))
+
+            if (typeFlags & ts.TypeFlags.StringLike)
+                return s.string(isString(literalValue) ? literalValue : undefined)
+            if (typeFlags & ts.TypeFlags.BigIntLike)
+                return s.bigint(isBigInt(literalValue) ? literalValue : undefined)
+            if (typeFlags & ts.TypeFlags.NumberLike)
+                return s.number(isNumber(literalValue) ? literalValue : undefined)
+            if (typeFlags & ts.TypeFlags.BooleanLike)
+                return s.boolean(type.isAssignableTo(types.TrueType) ? true : type.isAssignableTo(types.FalseType) ? false : undefined)
+            if (type.isUnion())
+                return s.union(...type.getUnionTypes().map((t, i) => typeToSchema(t, node, visited, `${path}|>${i}`)))
+            if (type.isVoid()) return s.void()
+            if (type.isNever()) return s.never()
+            if (type.isAny()) return s.any()
+            if (type.isUnknown()) return s.unknown()
+            if (type.isUndefined()) return s.undefined()
+            if (type.isNull()) return s.null()
+            if (type.isObject()) {
+                const index = indexTypeToSchema(type.getStringIndexType(), node, visited, `${path}[string]`)
                 const properties: ObjectTypeSchema["properties"] = {}
 
                 for (const prop of type.getProperties()) {
                     const required = !prop.isOptional()
-
-                    try {
-                        properties[prop.getName()] = { ...typeToSchema(prop.getTypeAtLocation(node), node), required }
-                    } catch (err) {
-                        if (required) throw err
-                    }
+                    properties[prop.getName()] = {...typeToSchema(prop.getTypeAtLocation(node), node, visited, `${path}.${prop.getName()}`), required}
                 }
 
-                return {
-                    type: "object",
-                    properties,
-                    stringIndex,
-                    numberIndex
-                }
+                return s.object(properties, index)
             }
-            default: {
-                throw new Error(`Unsupported type ${type.getText()}`)
+            // type not found
+            logger.debug(`${path}: Could not handle type: ${type.getText(node)}`)
+            return s.never()
+        } catch (err) {
+            if (err instanceof CyclicError && err.symbol === symbol) {
+                logger.debug(`${path}: Could not handle cyclic type: ${type.getText(node)}`)
+                return s.never()
             }
+            throw err
+        } finally {
+            if (symbol !== undefined) visited.delete(symbol)
         }
     }
 
-    function indexTypeToSchema(valueType: Type | undefined, node: Node): ValueTypeSchema | undefined
+    function indexTypeToSchema(valueType: Type | undefined, node: Node, visited: Set<Symbol>, path: string): ValueTypeSchema | undefined
     {
         if (valueType === undefined) return undefined
 
-        try {
-            typeToSchema(valueType, node)
-        } catch {
-            return undefined
-        }
-    }
-
-    function sanitizePrimitiveSchema(type: PrimitiveTypeSchema)
-    {
-        if ("value" in type && type.value === undefined)
-            delete type.value
-
-        return type
+        return typeToSchema(valueType, node, visited, path)
     }
 
     return {
@@ -270,8 +389,8 @@ function createUtils(project: Project)
     }
 }
 
-export async function extractComponents(project: Project, componentRoots: string[]): Promise<ComponentData[]> {
-    const utils = createUtils(project)
+export async function extractComponents(project: Project, componentRoots: string[], logger: Logger): Promise<ComponentData[]> {
+    const utils = createUtils(project, logger)
 
     const rootPaths = componentRoots.map(rootDir => path.resolve(rootDir).replace(/\\/g, "/"))
 

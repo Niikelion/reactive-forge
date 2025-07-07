@@ -3,8 +3,10 @@ import colors from "kleur";
 export type LoggerConfig = {
     silent?: boolean
     prefix?: boolean
+    debug?: boolean
 }
 
+const constructionIcon = "🚧"
 const sparklesIcon = "✨ "
 const errorIcon = "❌ "
 const okIcon = "✔️"
@@ -19,7 +21,15 @@ export function createLogger(config: LoggerConfig) {
         console.info(`${done ? okIcon : sparklesIcon}${prefix(config.prefix)} ${message}`)
     }
 
+    function debug(message: string) {
+        if (!config.debug || config.silent) return
+
+        console.debug(`${constructionIcon}${prefix(config.prefix)} ${message}`)
+    }
+
     function error(message: string) {
+        if (config.debug)
+            console.trace()
         console.error(`${errorIcon}${prefix(config.prefix)} ${colors.red(message)}`)
     }
 
@@ -34,6 +44,7 @@ export function createLogger(config: LoggerConfig) {
 
     return {
         info,
+        debug,
         error,
         timing
     }
