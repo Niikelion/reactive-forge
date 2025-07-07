@@ -144,11 +144,8 @@ program
     .description("Generates component wrappers with type information")
     .option("--config <path>", "location to config file")
     .option("-s, --silent", "Disables logging except errors", false)
+    .option("-d, --debug", "Enables debug output", undefined as false | undefined)
     .action(async (options) => {
-        const logger = createLogger({
-            silent: options.silent,
-            prefix: true
-        })
         const { loadConfig } = await import("load-config-ts")
 
         const configFile = options.config ?? "./forge.config.ts"
@@ -156,6 +153,12 @@ program
             cwd: process.cwd(),
             configKey: "forge",
             configFile
+        })
+
+        const logger = createLogger({
+            silent: options.silent,
+            prefix: true,
+            debug: options.debug ?? config.data?.debug ?? false
         })
 
         if (config.path === undefined) {

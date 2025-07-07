@@ -9,7 +9,11 @@ import {useStateWithDeps} from "use-state-with-deps";
 
 const transformArgs = (value: Record<string, ValueConstruct>, schema: ObjectTypeSchema["properties"], context: ComponentContext) => ({
     value,
-    valid: [...Object.entries(value)].every(([n, v]) => context.verify(v, schema[n]))
+    valid: [...Object.entries(value)].every(([n, v]) => {
+        const valid = context.verify(v, schema[n])
+        if (!valid) console.log({n, v, valid, schema: schema[n]})
+        return valid
+    })
 })
 
 export type ComponentPreviewOptions = {

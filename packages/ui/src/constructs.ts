@@ -1,10 +1,13 @@
 import {createElement} from "react";
 import {
-    ArgumentValue,
+    ArgumentValue, ArrayTypeSchema, BigIntTypeSchema, BooleanTypeSchema,
     ComponentLibrary,
-    ComponentSchema,
-    isBoolean, isNumber,
-    isReactNode, isString, ObjectTypeSchema,
+    ComponentSchema, DateTypeSchema, ElementTypeSchema,
+    isBoolean,
+    isNumber,
+    isReactNode,
+    isString, NullTypeSchema, NumberTypeSchema,
+    ObjectTypeSchema, StringTypeSchema,
     ValueTypeSchema,
     verifyValue
 } from "@reactive-forge/shared";
@@ -16,6 +19,7 @@ export type NullConstruct = Construct<"null", null>
 export type UndefinedConstruct = Construct<"undefined", undefined>
 export type BooleanConstruct = Construct<"boolean", boolean>
 export type NumberConstruct = Construct<"number", number>
+export type BigIntConstruct = Construct<"bigint", bigint>
 export type StringConstruct = Construct<"string", string>
 export type DateConstruct = Construct<"date", string>
 export type ArrayConstruct = Construct<"array", ValueConstruct[]>
@@ -27,7 +31,7 @@ export type ElementConstruct = Construct<"element", {
 }>
 export type ParameterConstruct = Construct<"param", string>
 export type VariableConstruct = Construct<"var", string>
-export type ValueConstruct = NullConstruct | UndefinedConstruct | BooleanConstruct | NumberConstruct | StringConstruct | DateConstruct | ArrayConstruct | ObjectConstruct | ElementConstruct | ParameterConstruct | VariableConstruct
+export type ValueConstruct = NullConstruct | UndefinedConstruct | BooleanConstruct | NumberConstruct | BigIntConstruct | StringConstruct | DateConstruct | ArrayConstruct | ObjectConstruct | ElementConstruct | ParameterConstruct | VariableConstruct
 
 function construct<T extends ValueConstruct["type"]>(type: T, value: (ValueConstruct & { type: T })["value"])
 {
@@ -43,6 +47,7 @@ export const constructSchema = {
     undefined: zodConstruct("undefined", z.undefined()),
     boolean: zodConstruct("boolean", z.boolean()),
     number: zodConstruct("number", z.number()),
+    bigInt: zodConstruct("bigint", z.bigint()),
     string: zodConstruct("string", z.string()),
     date: zodConstruct("date", z.string()),
     array: zodConstruct("array", z.lazy((): ZodType<ValueConstruct> => constructSchema.value).array()),
@@ -56,7 +61,8 @@ export const constructSchema = {
         constructSchema.null,
         constructSchema.undefined,
         constructSchema.boolean,
-        constructSchema.null,
+        constructSchema.number,
+        constructSchema.bigInt,
         constructSchema.string,
         constructSchema.date,
         constructSchema.array,
@@ -137,42 +143,80 @@ function resolveElementArgs(args: Record<string, ValueConstruct>, argsSchema: Co
     return ret
 }
 
-function constructFromSchema(schema: ValueTypeSchema, allowInvalid?: boolean): ValueConstruct | null
+function constructFromSchema(schema: NullTypeSchema): NullConstruct
+function constructFromSchema(schema: UndefinedConstruct): UndefinedConstruct
+function constructFromSchema(schema: BooleanTypeSchema): BooleanConstruct
+function constructFromSchema(schema: NumberTypeSchema): NumberConstruct
+function constructFromSchema(schema: BigIntTypeSchema): BigIntConstruct
+function constructFromSchema(schema: StringTypeSchema): StringConstruct
+function constructFromSchema(schema: DateTypeSchema): DateConstruct
+function constructFromSchema(schema: ArrayTypeSchema): ArrayConstruct
+function constructFromSchema(schema: ObjectTypeSchema): ObjectConstruct
+function constructFromSchema(schema: ElementTypeSchema): ElementConstruct
+function constructFromSchema(schema: ValueTypeSchema): ValueConstruct
+
+function constructFromSchema(schema: ValueTypeSchema): ValueConstruct
 {
     switch (schema.type) {
+        case "unknown":
+        case "any":
         case "null": return c.null()
         case "undefined": return c.undefined()
         case "boolean": return c.boolean(isBoolean(schema.value) ? schema.value ?? false : false)
         case "number": return c.number(isNumber(schema.value) ? schema.value ?? 0 : 0)
+        case "bigint": return c.bigint(0n)
         case "string": return c.string(isString(schema.value) ? schema.value ?? "" : "")
         case "date": return c.date(new Date())
-        case "array": return c.array([])
+        case "array": return c.array(schema.tupleTypes.map(constructFromSchema))
         case "element": return c.element("$", "Empty", {})
         case "object": {
             const props: Record<string, ValueConstruct> = {}
 
             for (const [propName, propSchema] of Object.entries(schema.properties)) {
                 if (!propSchema.required) continue
-
-                const value = constructFromSchema(propSchema, allowInvalid)
-
-                if (value === null) return null
-
-                props[propName] = value
+                props[propName] = constructFromSchema(propSchema)
             }
             return c.object(props)
         }
-        case "union": {
-            for (const type of schema.types)
-            {
-                const value = constructFromSchema(type, allowInvalid)
-                if (value === null) continue
+        case "union": return constructFromSchema(schema.types[0])
+        case "function": throw new Error(`Cannot construct value for "function"`)
+        case "never": throw new Error(`Cannot construct value for "never"`)
+        case "void": throw new Error(`Cannot construct value for "void"`)
+    }
+}
 
-                return value
-            }
-            return null
+function constructsEquals(a: ValueConstruct, b: ValueConstruct): boolean {
+    if (a.type !== b.type) return false
+
+    switch (a.type) {
+        case "null":
+        case "undefined":
+        case "boolean":
+        case "number":
+        case "bigint":
+        case "string":
+        case "var":
+        case "param":
+            return a.value === b.value
+        case "date":
+            return new Date(a.value).getDate() === new Date(b.value as string).getDate()
+        case "element": {
+            const bb = b as ElementConstruct
+            return a.value.path === bb.value.path && a.value.name === bb.value.name && constructsEquals(c.object(a.value.args), c.object(bb.value.args))
         }
-        default: return null
+        case "array": {
+            const bb = b as ArrayConstruct
+            return a.value.length === bb.value.length && a.value.every((v, i) => constructsEquals(v, bb.value[i]))
+        }
+        case "object": {
+            const bb = b as ObjectConstruct
+            if (Object.keys(bb.value).length !== Object.keys(a.value).length)
+                return false
+            for (const prop in a.value)
+                if (!constructsEquals(a.value[prop], bb.value[prop]))
+                    return false
+            return true
+        }
     }
 }
 
@@ -181,6 +225,7 @@ export const c = {
     undefined: () => construct("undefined", undefined),
     boolean: (v: boolean) => construct("boolean", v),
     number: (v: number) => construct("number", v),
+    bigint: (v: bigint) => construct("bigint", v),
     string: (v: string) => construct("string", v),
     date: (v: Date) => construct("date", v.toISOString()),
     array: (v: ValueConstruct[]) => construct("array", v),
@@ -194,9 +239,10 @@ export const c = {
 
         return resolvedValue
     },
+    constructsEquals,
     constructFromSchema,
     argsConstructsFromSchema(argsSchema: ObjectTypeSchema["properties"]) {
         const props = [...Object.entries(argsSchema)].filter(([,{ required }]) => required)
-        return Object.fromEntries(props.map(([propName, propSchema]) => [propName, c.constructFromSchema(propSchema, true) ?? c.undefined()]))
+        return Object.fromEntries(props.map(([propName, propSchema]) => [propName, c.constructFromSchema(propSchema)]))
     }
 } as const

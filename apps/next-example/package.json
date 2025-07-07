@@ -6,9 +6,12 @@
     "dev": "forge && next dev",
     "build": "forge && next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "codegen": "forge",
+    "prepare": "panda codegen"
   },
   "dependencies": {
+    "@pandacss/dev": "^0.53.1",
     "@reactive-forge/codegen": "1.0.0",
     "@reactive-forge/shared": "1.0.0",
     "@reactive-forge/ui": "1.0.0",

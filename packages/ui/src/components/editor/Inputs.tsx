@@ -1,4 +1,5 @@
 import {Children, FC, InputHTMLAttributes, ReactNode, useState} from "react";
+import {isBoolean} from "@reactive-forge/shared";
 
 type ValueInputProps<T> = {
     value: T
@@ -50,41 +51,59 @@ export const List: FC<{ type: "ordered" | "unordered", children?: ReactNode }> =
     }
 }
 type ArrayItemInputProps = {
+    required: boolean
     onInsertBefore(): void
     onDelete(): void
     children?: ReactNode
 }
-export const ArrayItemInput: FC<ArrayItemInputProps> = ({ onInsertBefore, onDelete, children }) =>
+export const ArrayItemInput: FC<ArrayItemInputProps> = ({ required, onInsertBefore, onDelete, children }) =>
     <li style={{ display: "flex", flexDirection: "row", gap: "10px" }}>
-        <button onClick={() => onInsertBefore()}>+</button>
-        {Children.count(children) > 0 && <button onClick={() => onDelete()}>-</button>}
+        {!required && <button onClick={() => onInsertBefore()}>+</button>}
+        {!required && Children.count(children) > 0 && <button onClick={() => onDelete()}>-</button>}
         {children}
     </li>
 type ObjectPropertyInputProps = {
     name: string
-    required: boolean
-    onEnable(): void
-    onDisable(): void
+    type: "required" | "optional" | "index"
+    onDelete?(): void
+    onRename?(newName: string): void
     children?: ReactNode
 }
-export const ObjectPropertyInput: FC<ObjectPropertyInputProps> = ({ name, required, onEnable, onDisable, children }) =>
-    <li style={{ display: "flex", flexDirection: "row", gap: "10px" }}>
-        {!required && <BooleanInput value={Children.count(children) > 0} onValueChanged={v => v ? onEnable() : onDisable()} />}
-        <span>{name}:</span>
-        {children}
-    </li>
-type ObjectIndexInputProps = {
-    name: string
-    onRename(n: string): void
-    onDelete(): void
-    children?: ReactNode
-}
-export const ObjectIndexInput: FC<ObjectIndexInputProps> = ({ name, onRename, onDelete, children }) => {
+export const ObjectPropertyInput: FC<ObjectPropertyInputProps> = ({ name, type, onDelete, onRename, children }) => {
     const [ tmpName, setTmpName ] = useState(name)
+
+    const canBeDeleted = type !== "required"
+    const canBeRenamed = type === "index"
+
     return <li style={{display: "flex", flexDirection: "row", gap: "10px"}}>
-        <button onClick={() => onRename(tmpName)}>{">"}</button>
-        <button onClick={onDelete}>-</button>
-        <input type="text" value={tmpName} onChange={e => setTmpName(e.currentTarget.value)} />
+        {canBeRenamed && <button onClick={() => onRename && onRename(tmpName)}>{">"}</button>}
+        {canBeDeleted && <button onClick={onDelete}>-</button>}
+        {canBeRenamed ? (
+            <>
+                <input type="text" value={tmpName} onChange={e => setTmpName(e.currentTarget.value)} />
+                <span>:</span>
+            </>
+        ) : <span>{name}:</span>}
         {children}
     </li>;
+}
+type ObjectNewPropertyInput = {
+    onAdd(name: string): void
+    namesToSuggest: string[]
+    allowCustomNames: boolean
+}
+export const ObjectNewPropertyInput: FC<ObjectNewPropertyInput> = ({ onAdd, namesToSuggest, allowCustomNames }) => {
+    const [ tmpName, setTmpName ] = useState("")
+
+    return (
+        <span>
+            <button onClick={() => {
+                if (!allowCustomNames && !namesToSuggest.includes(tmpName)) return
+
+                onAdd(tmpName)
+                setTmpName("")
+            }}>+</button>
+            <input type="text" value={tmpName} onChange={e => setTmpName(e.currentTarget.value)} />
+        </span>
+    )
 }
