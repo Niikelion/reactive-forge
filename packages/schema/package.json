@@ -1,6 +1,6 @@
 {
-  "name": "@reactive-forge/eslint-config",
-  "version": "0.1.0",
+  "name": "@reactive-forge/schema",
+  "version": "1.0.0",
   "license": "MIT",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -19,23 +19,24 @@
     }
   },
   "scripts": {
+    "lint": "eslint \"**/*.ts\"",
     "build": "tsdown && attw --pack ."
   },
   "dependencies": {
-    "@eslint/js": "^8 || ^9",
-    "@typescript-eslint/eslint-plugin": "^7",
-    "@typescript-eslint/parser": "^7",
-    "eslint": "^8 || ^9",
-    "eslint-config-prettier": "^9",
-    "eslint-plugin-react-hooks": "^5.2.0",
-    "eslint-plugin-react-refresh": "^0",
-    "typescript-eslint": "^8.26.1"
-  },
-  "publishConfig": {
-    "access": "public"
+    "@types/node": "^22.13.4",
+    "react": "^19.1.0",
+    "remeda": "^2.24.0",
+    "ts-morph": "^25.0.1",
+    "typescript": "^5.7.3",
+    "zod": "^3.25.75"
   },
   "devDependencies": {
     "@gamedev-sensei/ts-config": "^2.0.1",
-    "@gamedev-sensei/tsdown-config": "^2.0.1"
+    "@gamedev-sensei/tsdown-config": "^2.0.1",
+    "@reactive-forge/eslint-config": "0.1.0",
+    "@types/react": "^19.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
