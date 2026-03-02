@@ -1,4 +1,6 @@
-import {SchemaFactory} from "@/schema/Schema"
+import {registerSchemaFactory, SchemaFactory} from "@/schema/Schema"
+import {IntersectionRule, registerIntersectionRule} from "@/schema/intersection";
+import {EqualityRule, registerEqualityRule} from "@/schema/equality";
 import {NeverSchema} from "@/schema/Never";
 import {UnknownSchema} from "@/schema/Unknown";
 import {NullSchema} from "@/schema/Null";
@@ -15,7 +17,13 @@ import {VoidSchema} from "@/schema/Void";
 import {UnionSchema} from "@/schema/Union";
 import {FunctionSchema} from "@/schema/Function";
 
-export const commonTypes: Record<string, { fromJson: SchemaFactory }> = {
+interface SchemaModule {
+    fromJson: SchemaFactory
+    intersectionRules: IntersectionRule[]
+    equalityRules: EqualityRule[]
+}
+
+export const commonTypes: Record<string, SchemaModule> = {
     never: NeverSchema,
     unknown: UnknownSchema,
     null: NullSchema,
@@ -31,4 +39,12 @@ export const commonTypes: Record<string, { fromJson: SchemaFactory }> = {
     union: UnionSchema,
     void: VoidSchema,
     function: FunctionSchema,
+}
+
+export function registerCommonSchemas() {
+    for (const [name, module] of Object.entries(commonTypes)) {
+        registerSchemaFactory(name, module.fromJson)
+        for (const rule of module.intersectionRules) registerIntersectionRule(rule)
+        for (const rule of module.equalityRules) registerEqualityRule(rule)
+    }
 }
