@@ -1,4 +1,4 @@
-import {ArrayConstruct, ElementConstruct, ObjectConstruct, ValueConstruct} from "@/schema/Construct";
+import {ArrayConstruct, ElementConstruct, FunctionConstruct, ObjectConstruct, ValueConstruct} from "@/schema/Construct";
 import {Schema} from "@/schema/Schema";
 import {ArraySchema} from "@/schema/Array";
 
@@ -39,8 +39,8 @@ function constructsEquals(a: ValueConstruct, b: ValueConstruct): boolean {
             return true
         }
         case "function": {
-            //TODO: implement
-            throw new Error("cannot compare function constructs")
+            const bb = b as FunctionConstruct
+            return a.value.func === bb.value.func
         }
     }
 }

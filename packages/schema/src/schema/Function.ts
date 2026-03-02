@@ -6,6 +6,8 @@ import {makeSchema, parseJson, schemaFromJson, selfRule} from "@/schema/utils";
 import {ArraySchema} from "@/schema/Array";
 import {isAssignableTo} from "@/schema/assignability";
 import {equals} from "@/schema/equality";
+import {intersect} from "@/schema/intersection";
+import {NeverSchema} from "@/schema/Never";
 
 export class FunctionSchema implements Schema {
     readonly name = "function"
@@ -30,7 +32,7 @@ export class FunctionSchema implements Schema {
     verifyConstructType(construct: ValueConstruct): boolean {
         return construct.type === "function"
             && isAssignableTo(construct.value.returnType, this.returnType)
-            && isAssignableTo(this.paramsType, construct.value.returnType)
+            && isAssignableTo(construct.value.paramsType, this.paramsType)
     }
 
     withTransformedChildren(transformer: (node: Schema) => Schema): FunctionSchema {
@@ -48,11 +50,17 @@ export class FunctionSchema implements Schema {
             ArraySchema.fromJson(parsedJson.paramsType)
         )
     }
-    //TODO: implement, take overloads into account
-    static readonly intersectionRules = []
+    // Intersection of functions with different param types would require overload
+    // representation, which the schema doesn't support — NeverSchema in that case.
+    static readonly intersectionRules = [
+        selfRule(FunctionSchema, "function", (a, b) => {
+            if (!equals(a.paramsType, b.paramsType)) return NeverSchema.instance
+            return new FunctionSchema(intersect(a.returnType, b.returnType), a.paramsType)
+        })
+    ]
     static readonly equalityRules = [
         selfRule(FunctionSchema, "function", (a, b) =>
-            equals(a.returnType, b.returnType) && equals(b.paramsType, b.paramsType)
+            equals(a.returnType, b.returnType) && equals(a.paramsType, b.paramsType)
         )
     ]
 }
