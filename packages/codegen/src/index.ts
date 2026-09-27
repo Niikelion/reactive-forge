@@ -16,13 +16,22 @@ export type CodegenConfig = {
 
 export type ForgeConfig = Partial<CodegenConfig>
 
+// All relative paths in a config file (rootDir, baseDir, tsConfigFilePath,
+// typescriptLibPath, outDir, reactTypesFilePath, componentRoots) anchor to
+// `projectRootDir`, not to the process's current working directory. Callers
+// that load a config file (bin.ts) pass the config file's own directory as
+// `projectRootDir`, so a config's relative paths behave the same regardless
+// of where the CLI is invoked from. Callers that already resolved every path
+// to an absolute path (for example direct API/test callers) are unaffected,
+// since `path.resolve` leaves an absolute path unchanged.
 export function fillConfig(config: ForgeConfig, projectRootDir = "./"): CodegenConfig {
-    const rootDir = config.rootDir ?? projectRootDir
-    const baseDir = config.baseDir ?? "./src"
-    const tsConfigFilePath = config.tsConfigFilePath ?? path.resolve(rootDir, "./tsconfig.json")
-    const typescriptLibPath = config.typescriptLibPath ?? path.resolve(rootDir, "./node_modules/typescript/lib")
-    const outDir = config.outDir ?? path.resolve(rootDir, "./reactive-forge")
-    const componentRoots = config.componentRoots ?? [baseDir]
+    const anchor = path.resolve(projectRootDir)
+    const rootDir = path.resolve(anchor, config.rootDir ?? "./")
+    const baseDir = path.resolve(rootDir, config.baseDir ?? "./src")
+    const tsConfigFilePath = path.resolve(rootDir, config.tsConfigFilePath ?? "./tsconfig.json")
+    const typescriptLibPath = path.resolve(rootDir, config.typescriptLibPath ?? "./node_modules/typescript/lib")
+    const outDir = path.resolve(rootDir, config.outDir ?? "./reactive-forge")
+    const componentRoots = (config.componentRoots ?? [baseDir]).map(root => path.resolve(rootDir, root))
     const pathPrefix = config.pathPrefix ?? "@/"
 
     return {
@@ -33,7 +42,8 @@ export function fillConfig(config: ForgeConfig, projectRootDir = "./"): CodegenC
         rootDir,
         baseDir,
         pathPrefix,
-        componentRoots
+        componentRoots,
+        ...(config.reactTypesFilePath !== undefined ? { reactTypesFilePath: path.resolve(rootDir, config.reactTypesFilePath) } : {})
     }
 }
 
