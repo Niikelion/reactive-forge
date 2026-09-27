@@ -43,6 +43,16 @@ function findMetadata(metadata: MetadataDocument, id: string): ComponentMetadata
     return metadata.components.find(component => component.id === id)
 }
 
+// A function-typed prop that is also optional extracts as a union of
+// function/undefined (extract.ts widens optional properties), not a bare
+// `{type: "function"}` schema - so "is this prop callback-shaped" has to look
+// inside a union, not just check the top-level type tag.
+function isFunctionLike(schema: {type: string, types?: {type: string}[]}): boolean {
+    if (schema.type === "function") return true
+    if (schema.type === "union") return (schema.types ?? []).some(isFunctionLike)
+    return false
+}
+
 function validateInstance(
     node: CompositionInstance,
     path: string,
@@ -71,7 +81,7 @@ function validateInstance(
             continue
         }
         if (provided.kind === "callback") {
-            if (propMeta.schema.type !== "function") {
+            if (!isFunctionLike(propMeta.schema)) {
                 diagnostics.push({severity: "error", code: "callback-for-non-function-prop", message: `Prop "${propName}" is not function-typed and cannot take a callback reference`, path: `${path}.props.${propName}`})
                 continue
             }

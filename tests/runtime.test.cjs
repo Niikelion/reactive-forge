@@ -67,22 +67,19 @@ test('runtime validates, renders, and round-trips a nested composition document 
     assert.ok(cardMeta, 'metadata.json describes Card');
     assert.ok(greeterMeta, 'metadata.json describes Greeter');
 
-    // KNOWN GAP, out of this gate's file ownership (extract.ts is frozen for
-    // this task): packages/codegen/src/extract.ts's typeToSchema has no case
-    // that recognizes a function-typed prop and emits FunctionSchema - a
-    // zero-arg callback prop like Card's `onRender` is currently extracted
-    // as an (empty) object/undefined union instead. This is a real,
-    // independently-reproducible extraction gap (verified: `node -e` dumping
-    // metadata.json for this exact fixture shows
-    // `{"type":"union","types":[{"type":"object","properties":{}},{"type":"undefined"}]}`
-    // for `onRender`, not `{"type":"function",...}`), not something the
-    // runtime package can or should paper over silently. Since fixing
-    // extraction is out of scope here, this test patches only that one
-    // field on the in-memory metadata copy to the FunctionSchema shape
-    // extraction *should* produce, so the callback-reference mechanism
-    // itself - the actual subject of this test - can be exercised against
-    // real bundle/registry/id data for everything else.
-    cardMeta.props.onRender.schema = { type: 'function', returnType: { type: 'unknown' }, paramsType: { type: 'array', tupleTypes: [] } };
+    // extract.ts's typeToSchema now recognizes function-typed props and
+    // emits a real FunctionSchema (fixed after this test was first written -
+    // see docs/baseline.md); onRender's schema comes straight from the real
+    // generated metadata.json, no patching needed. `onRender?: () => void`
+    // extracts as a union of function/undefined (optional props widen to
+    // include undefined), not a bare function schema.
+    assert.deepEqual(cardMeta.props.onRender.schema, {
+      type: 'union',
+      types: [
+        { type: 'function', returnType: { type: 'void' }, paramsType: { type: 'array', tupleTypes: [] } },
+        { type: 'undefined' },
+      ],
+    });
 
     // --- Build a composition document: Card, nesting Greeter as a child,
     // with a callback-reference prop (not a stored function body). ---
@@ -175,12 +172,8 @@ test('runtime validation reports structured diagnostics instead of throwing for 
     assert.ok(badTypeResult.diagnostics.some(d => d.code === 'invalid-prop-value'));
 
     // Callback reference to a name absent from the host registry: not a
-    // silent no-op, an explicit validation error. Patches Card's `onRender`
-    // schema to FunctionSchema for the same reason as the test above
-    // (extract.ts doesn't yet emit FunctionSchema for function-typed props -
-    // see that test's comment).
+    // silent no-op, an explicit validation error.
     const cardMeta = metadata.components.find(c => c.name === 'Card');
-    cardMeta.props.onRender.schema = { type: 'function', returnType: { type: 'unknown' }, paramsType: { type: 'array', tupleTypes: [] } };
     const missingCallbackDoc = { schemaVersion: 1, root: { kind: 'instance', id: cardMeta.id, props: {
       title: { kind: 'value', value: { type: 'string', value: 'X' } },
       onRender: { kind: 'callback', name: 'not_registered' },

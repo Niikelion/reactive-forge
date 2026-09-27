@@ -23,6 +23,7 @@ import {
     BigIntSchema,
     BooleanSchema,
     DateSchema,
+    FunctionSchema,
     intersect,
     NullSchema,
     NumberSchema,
@@ -33,6 +34,7 @@ import {
     UndefinedSchema,
     UnknownSchema,
     UnionSchema,
+    VoidSchema,
 } from "@reactive-forge/schema"
 
 const isDefined = <T>(v: T | undefined | null): v is T => v !== null && v !== undefined
@@ -435,11 +437,33 @@ function createUtils(project: Project, sourceDirectory: string)
         if (typeFlags & ts.TypeFlags.BigIntLike)
             return new BigIntSchema(typeof literalValue === "bigint" ? literalValue : undefined)
 
+        const callSignatures = type.getCallSignatures()
+        if (callSignatures.length > 0) {
+            const [signature] = callSignatures
+            if (callSignatures.length > 1)
+                report("unsupported-type", `Overloaded function types are not supported; using the first signature: ${type.getText()}`, locationOf(node))
+
+            if (signature) {
+                const returnType = typeToSchema(signature.getReturnType(), node, report)
+                const paramSchemas = signature.getParameters().map(param => {
+                    const paramType = calculateOrDefault(() => param.getTypeAtLocation(node), undefined)
+                    if (paramType === undefined) {
+                        report("unsupported-type", `Could not resolve type of parameter "${param.getName()}"`, locationOf(node))
+                        return new UnknownSchema()
+                    }
+                    return typeToSchema(paramType, node, report)
+                })
+                return new FunctionSchema(returnType, new ArraySchema(paramSchemas))
+            }
+        }
+
         switch (type.getFlags()) {
             case ts.TypeFlags.Null:
                 return NullSchema.instance
             case ts.TypeFlags.Undefined:
                 return UndefinedSchema.instance
+            case ts.TypeFlags.Void:
+                return VoidSchema.instance
             case ts.TypeFlags.Object: {
                 const indexType = indexTypeToSchema(type.getStringIndexType(), node, report)
 
