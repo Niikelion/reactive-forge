@@ -1,5 +1,7 @@
 # Reactive Forge
 
+> This project is being rebuilt. The usage and UI documentation below describe the earlier implementation; the current checkout contains schema and code-generation packages. See the [development plan](docs/development-plan.md) and [verified baseline](docs/baseline.md) for current capabilities, checks, and known regressions.
+
 Reactive Forge is a metadata generator for react components.
 It generates files exposing list of components with descriptions of their arguments.
 Can be used to create component library preview or ui designer with components imported from code.

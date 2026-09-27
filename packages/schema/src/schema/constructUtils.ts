@@ -20,7 +20,7 @@ function constructsEquals(a: ValueConstruct, b: ValueConstruct): boolean {
         case "string":
             return a.value === b.value
         case "date":
-            return new Date(a.value).getDate() === new Date(b.value as string).getDate()
+            return new Date(a.value).getTime() === new Date(b.value as string).getTime()
         case "element": {
             const bb = b as ElementConstruct
             return a.value.path === bb.value.path && a.value.name === bb.value.name && constructsEquals(c.object(a.value.args), c.object(bb.value.args))
@@ -31,11 +31,15 @@ function constructsEquals(a: ValueConstruct, b: ValueConstruct): boolean {
         }
         case "object": {
             const bb = b as ObjectConstruct
-            if (Object.keys(bb.value).length !== Object.keys(a.value).length)
+            const aKeys = Object.keys(a.value)
+            if (Object.keys(bb.value).length !== aKeys.length)
                 return false
-            for (const prop in a.value)
-                if (a.value[prop] && bb.value[prop] && !constructsEquals(a.value[prop], bb.value[prop]))
-                    return false
+            for (const prop of aKeys) {
+                if (!(prop in bb.value)) return false
+                const aValue = a.value[prop]
+                const bValue = bb.value[prop]
+                if (aValue === undefined || bValue === undefined || !constructsEquals(aValue, bValue)) return false
+            }
             return true
         }
         case "function": {

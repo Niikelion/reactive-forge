@@ -13,3 +13,5 @@ tsconfig.tsbuildinfo
 .yarn
 .idea
 .claude
+.codex
+docs/

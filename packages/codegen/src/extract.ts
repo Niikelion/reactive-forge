@@ -1,10 +1,13 @@
 import path from "path"
+import {existsSync} from "fs"
 import {
     ExportAssignment,
+    ExportSpecifier,
     FunctionDeclaration,
     Node,
     Project,
     Signature,
+    SourceFile,
     Symbol,
     ts,
     Type,
@@ -40,7 +43,7 @@ function calculateOrDefault<T>(calculation: () => T, defaultValue: T)
     }
 }
 
-function createUtils(project: Project)
+function createUtils(project: Project, sourceDirectory: string)
 {
     const source = `
         import {FC, ReactNode, JSX} from "react"
@@ -51,7 +54,11 @@ function createUtils(project: Project)
         export type FalseType = false
     `
 
-    const tmpSourceFile = project.createSourceFile("./__reactive_forge_utils_tmp_file.ts", source)
+    let helperPath = path.join(sourceDirectory, "__reactive_forge_utils_tmp_file.ts")
+    for (let suffix = 1; project.getSourceFile(helperPath) || existsSync(helperPath); suffix++)
+        helperPath = path.join(sourceDirectory, `__reactive_forge_utils_tmp_file_${suffix.toString()}.ts`)
+
+    const tmpSourceFile = project.createSourceFile(helperPath, source)
     function getType(name: string)
     {
         return tmpSourceFile.getTypeAliasOrThrow(name).getType()
@@ -67,16 +74,22 @@ function createUtils(project: Project)
         return ret
     }
 
-    const types = extractTypes(
-        "ComponentReturnType",
-        "ReactNodeType",
-        "DateType",
-        "TrueType",
-        "FalseType"
-    )
+    let types: Record<"ComponentReturnType" | "ReactNodeType" | "DateType" | "TrueType" | "FalseType", Type>
+    try {
+        types = extractTypes(
+            "ComponentReturnType",
+            "ReactNodeType",
+            "DateType",
+            "TrueType",
+            "FalseType"
+        )
 
-    if (project.getTypeChecker().getTypeText(types.ReactNodeType) === "any")
-        throw new Error("[reactive-forge]: Cannot find react types!")
+        if (types.ReactNodeType.isAny())
+            throw new Error("[reactive-forge]: Cannot find react types!")
+    } catch (error) {
+        tmpSourceFile.forget()
+        throw error
+    }
 
     function callSignatureFromType(type: Type): Signature | undefined {
         const callSignatures = type.getCallSignatures()
@@ -116,13 +129,8 @@ function createUtils(project: Project)
         return parameters.length <= 1;
     }
 
-    function extractComponentData(signature: Signature | undefined, symbol: Symbol, isDefault: boolean): ComponentData | null
+    function extractComponentData(signature: Signature | undefined, symbol: Symbol, name: string, sourcePath: string, isDefault: boolean): ComponentData | null
     {
-        const decl = symbol.getDeclarations()[0]
-        if (!decl) return null
-        const name = decl.getFirstChild(n => n.isKind(ts.SyntaxKind.Identifier))?.getText()
-        if (!name) return null
-
         if (signature === undefined) return null
 
         if (!verifySignature(signature)) return null
@@ -134,6 +142,7 @@ function createUtils(project: Project)
         return {
             symbol,
             name,
+            sourcePath,
             isDefault,
             args
         }
@@ -248,54 +257,120 @@ function createUtils(project: Project)
 
     return {
         getSignature,
-        extractComponentData
+        extractComponentData,
+        dispose: () => { tmpSourceFile.forget() }
     }
 }
 
+function isRuntimeDeclaration(declaration: Node): boolean {
+    if (declaration.getSourceFile().isDeclarationFile()) return false
+    if (Node.isFunctionDeclaration(declaration)) return declaration.getBody() !== undefined
+    if (Node.isVariableDeclaration(declaration))
+        return !declaration.getVariableStatement()?.hasDeclareKeyword()
+    return Node.isExportAssignment(declaration)
+}
+
+function exportedName(specifier: ExportSpecifier): string {
+    const alias = specifier.getAliasNode()
+    return alias && Node.isStringLiteral(alias) ? alias.getLiteralValue() :
+        alias?.getText() ?? specifier.getName()
+}
+
+function isImportedOnlyAsType(sourceFile: SourceFile, name: string): boolean {
+    return sourceFile.getImportDeclarations().some(declaration => {
+        const namedImport = declaration.getNamedImports().find(specifier =>
+            (specifier.getAliasNode()?.getText() ?? specifier.getName()) === name
+        )
+        const otherImport = declaration.getDefaultImport()?.getText() === name ||
+            declaration.getNamespaceImport()?.getText() === name
+        if (!namedImport && !otherImport) return false
+        return declaration.isTypeOnly() || namedImport?.isTypeOnly() === true
+    })
+}
+
+function isValueExported(sourceFile: SourceFile, name: string, visited = new Set<string>()): boolean {
+    const key = `${sourceFile.getFilePath()}:${name}`
+    if (visited.has(key)) return false
+    visited.add(key)
+
+    const publicSymbol = sourceFile.getExportSymbols().find(symbol => symbol.getName() === name)
+    if (!publicSymbol) return false
+
+    if (publicSymbol.getDeclarations().some(declaration =>
+        declaration.getSourceFile() === sourceFile &&
+        isRuntimeDeclaration(declaration)
+    )) return true
+
+    for (const exportDeclaration of sourceFile.getExportDeclarations()) {
+        if (exportDeclaration.isTypeOnly()) continue
+        const moduleFile = exportDeclaration.getModuleSpecifierSourceFile()
+
+        for (const specifier of exportDeclaration.getNamedExports()) {
+            if (specifier.isTypeOnly() || exportedName(specifier) !== name)
+                continue
+
+            if (moduleFile) {
+                if (isValueExported(moduleFile, specifier.getName(), new Set(visited))) return true
+            } else if (!exportDeclaration.getModuleSpecifier() &&
+                !isImportedOnlyAsType(sourceFile, specifier.getName()) &&
+                resolvedSymbol(publicSymbol).getDeclarations().some(isRuntimeDeclaration)) {
+                return true
+            }
+        }
+
+        if (moduleFile && exportDeclaration.getNamedExports().length === 0 &&
+            isValueExported(moduleFile, name, new Set(visited))) return true
+    }
+
+    return false
+}
+
+function resolvedSymbol(symbol: Symbol): Symbol {
+    return symbol.getAliasedSymbol() ?? symbol
+}
+
+function defaultName(symbol: Symbol): string {
+    const declaration = symbol.getDeclarations().find(isRuntimeDeclaration)
+    return declaration?.getFirstChild(node => node.isKind(ts.SyntaxKind.Identifier))?.getText() ?? "default"
+}
+
+function matchesRoot(sourcePath: string, rootPath: string): boolean {
+    return sourcePath === rootPath || sourcePath.startsWith(rootPath.endsWith("/") ? rootPath : `${rootPath}/`)
+}
+
 export function extractComponents(project: Project, componentRoots: string[]): ComponentData[] {
-    const utils = createUtils(project)
+    const rootPaths = componentRoots.map(root => path.resolve(root).replace(/\\/g, "/"))
+    const selectedFiles = project.getSourceFiles().filter(sourceFile =>
+        !sourceFile.isDeclarationFile() &&
+        rootPaths.some(rootPath => matchesRoot(sourceFile.getFilePath().replace(/\\/g, "/"), rootPath))
+    )
+    const firstFile = selectedFiles[0]
+    if (!firstFile) return []
 
-    const rootPaths = componentRoots.map(rootDir => path.resolve(rootDir).replace(/\\/g, "/"))
+    const utils = createUtils(project, path.dirname(firstFile.getFilePath()))
+    try {
+        return selectedFiles.flatMap(sourceFile => {
+            const sourcePath = sourceFile.getFilePath().replace(/\\/g, "/")
+            const exports = sourceFile.getExportSymbols().sort((left, right) =>
+                Number(left.getName() === "default") - Number(right.getName() === "default")
+            )
+            const namedExports = new Set(exports.map(symbol => symbol.getName()).filter(name => name !== "default"))
 
-    return project.getSourceFiles().map(sourceFile => {
-        const sourceFilePath = sourceFile.getFilePath()
-        if (!rootPaths.some(rootPath => sourceFilePath.startsWith(rootPath)))
-            return []
+            return exports.flatMap(publicSymbol => {
+                const publicName = publicSymbol.getName()
+                if (!isValueExported(sourceFile, publicName)) return []
 
-        const exportNames = sourceFile.getExportDeclarations().map(declaration => {
-            const modulePath = declaration.getModuleSpecifier()
-
-            // skip if this is just re-export
-            if (modulePath != undefined) return null
-
-            return declaration.getNamedExports().map(namedExport => {
-                const symbol = namedExport.getSymbol()
-                if (!symbol) return null
-
-                const declarations = symbol.getDeclarations()
-
-                return utils.extractComponentData(declarations.map(utils.getSignature).find(isDefined), symbol, false)
-            }).flat()
-        }).flat()
-
-        const defaultExportSymbol = sourceFile.getDefaultExportSymbol()
-
-        const defaultExports = (defaultExportSymbol !== undefined ? [defaultExportSymbol] : []).map(defaultExport => {
-            const declarations = defaultExport.getDeclarations()
-
-            return utils.extractComponentData(declarations.map(utils.getSignature).find(isDefined), defaultExport, true)
+                const symbol = resolvedSymbol(publicSymbol)
+                const signature = symbol.getDeclarations().filter(isRuntimeDeclaration)
+                    .map(utils.getSignature).find(isDefined)
+                const isDefault = publicName === "default"
+                const declarationName = isDefault ? defaultName(symbol) : publicName
+                const name = isDefault && namedExports.has(declarationName) ? "default" : declarationName
+                const component = utils.extractComponentData(signature, symbol, name, sourcePath, isDefault)
+                return component ? [component] : []
+            })
         })
-
-        const variableDeclaration = sourceFile.getVariableDeclarations().map(declaration => {
-            if (!declaration.isExported()) return null
-
-            const symbol = declaration.getSymbol()
-
-            if (symbol === undefined) return null
-
-            return utils.extractComponentData(utils.getSignature(declaration), symbol, false)
-        })
-
-        return [exportNames, variableDeclaration, defaultExports].flat().filter(isDefined)
-    }).flat()
+    } finally {
+        utils.dispose()
+    }
 }
