@@ -3,6 +3,9 @@ export * from "./Construct"
 export * from "./Schema"
 export * from "./constructUtils"
 export * from "./commonSchemas"
+export * from "./intersection"
+export * from "./equality"
+export * from "./assignability"
 export * from "./Null";
 export * from "./Never";
 export * from "./Unknown";

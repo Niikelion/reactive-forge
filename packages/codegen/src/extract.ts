@@ -1,0 +1,301 @@
+import path from "path"
+import {
+    ExportAssignment,
+    FunctionDeclaration,
+    Node,
+    Project,
+    Signature,
+    Symbol,
+    ts,
+    Type,
+    VariableDeclaration
+} from "ts-morph"
+import {ComponentData} from "./types.js"
+import {
+    ArraySchema,
+    BigIntSchema,
+    BooleanSchema,
+    DateSchema,
+    intersect,
+    NullSchema,
+    NumberSchema,
+    ObjectSchema,
+    ReactNodeSchema,
+    Schema,
+    StringSchema,
+    UndefinedSchema,
+    UnionSchema,
+} from "@reactive-forge/schema"
+
+const isDefined = <T>(v: T | undefined | null): v is T => v !== null && v !== undefined
+const isString = (v: unknown): v is string => v instanceof String || typeof v === "string"
+const isNumber = (v: unknown): v is number => v instanceof Number || typeof v === "number"
+
+function calculateOrDefault<T>(calculation: () => T, defaultValue: T)
+{
+    try {
+        return calculation()
+    } catch {
+        return defaultValue
+    }
+}
+
+function createUtils(project: Project)
+{
+    const source = `
+        import {FC, ReactNode, JSX} from "react"
+        export type ComponentReturnType = ReturnType<FC> | JSX.Element
+        export type ReactNodeType = ReactNode
+        export type DateType = Date
+        export type TrueType = true
+        export type FalseType = false
+    `
+
+    const tmpSourceFile = project.createSourceFile("./__reactive_forge_utils_tmp_file.ts", source)
+    function getType(name: string)
+    {
+        return tmpSourceFile.getTypeAliasOrThrow(name).getType()
+    }
+
+    function extractTypes<T extends string[]>(...names: T): Record<T[number], Type>
+    {
+        const ret: Record<string, Type> = {}
+
+        for (const name of names)
+            ret[name] = getType(name)
+
+        return ret
+    }
+
+    const types = extractTypes(
+        "ComponentReturnType",
+        "ReactNodeType",
+        "DateType",
+        "TrueType",
+        "FalseType"
+    )
+
+    if (project.getTypeChecker().getTypeText(types.ReactNodeType) === "any")
+        throw new Error("[reactive-forge]: Cannot find react types!")
+
+    function callSignatureFromType(type: Type): Signature | undefined {
+        const callSignatures = type.getCallSignatures()
+
+        if (callSignatures.length === 0) return undefined
+
+        return callSignatures[0]
+    }
+
+    function getSignature(node: Node): Signature | undefined
+    {
+        if (node instanceof FunctionDeclaration) return node.getSignature()
+
+        if (node instanceof VariableDeclaration) return callSignatureFromType(node.getType())
+
+        if (node instanceof ExportAssignment)
+        {
+            const expression = node.getExpression()
+            const type = expression.getType()
+            return callSignatureFromType(type)
+        }
+
+        return undefined
+    }
+
+    function verifySignature(signature: Signature): boolean
+    {
+        // must return ReactNode or Promise<ReactNode>
+        if (!signature.getReturnType().isAssignableTo(types.ComponentReturnType)) return false
+
+        // type parameters not allowed
+        if (signature.getTypeParameters().length > 0) return false
+
+        const parameters = signature.getParameters()
+
+        // at most 1 parameter - props
+        return parameters.length <= 1;
+    }
+
+    function extractComponentData(signature: Signature | undefined, symbol: Symbol, isDefault: boolean): ComponentData | null
+    {
+        const decl = symbol.getDeclarations()[0]
+        if (!decl) return null
+        const name = decl.getFirstChild(n => n.isKind(ts.SyntaxKind.Identifier))?.getText()
+        if (!name) return null
+
+        if (signature === undefined) return null
+
+        if (!verifySignature(signature)) return null
+
+        const args = calculateOrDefault(() => extractParameters(signature.getParameters()[0]), null)
+
+        if (args === null) return null
+
+        return {
+            symbol,
+            name,
+            isDefault,
+            args
+        }
+    }
+
+    function extractParameters(propsSymbol: Symbol | undefined): ComponentData["args"]
+    {
+        if (propsSymbol === undefined) return {}
+
+        const declaration = propsSymbol.getDeclarations()[0]
+        if (!declaration) return {}
+
+        const type = propsSymbol.getTypeAtLocation(declaration)
+
+        const paramsSchema = typeToSchema(type, declaration)
+
+        if (!(paramsSchema instanceof ObjectSchema))
+            throw new Error("Props type is not an object")
+
+        return paramsSchema.properties
+    }
+
+    function typeToSchema(type: Type, node: Node): Schema
+    {
+        if (types.ReactNodeType.isAssignableTo(type))
+            return ReactNodeSchema.instance
+
+        if (type.isArray()) {
+            const elementType = type.getArrayElementType()
+            if (!elementType) throw new Error("Could not get array element type")
+            return new ArraySchema([], typeToSchema(elementType, node))
+        }
+
+        if (type.isAssignableTo(types.DateType))
+            return DateSchema.instance
+
+        const literalValue = type.getLiteralValue()
+        const typeFlags = type.getFlags()
+
+        if (typeFlags & ts.TypeFlags.Union) {
+            const members = type.getUnionTypes().map(t => typeToSchema(t, node))
+            // Flatten nested unions
+            const flatMembers: Schema[] = []
+            for (const m of members) {
+                if (m instanceof UnionSchema) flatMembers.push(...m.types)
+                else flatMembers.push(m)
+            }
+            return new UnionSchema(flatMembers)
+        }
+
+        if (typeFlags & ts.TypeFlags.Intersection)
+            return type.getIntersectionTypes()
+                .map(t => typeToSchema(t, node))
+                .reduce((a, b) => intersect(a, b))
+
+        if (typeFlags & ts.TypeFlags.StringLike)
+            return new StringSchema(isString(literalValue) ? literalValue : undefined)
+
+        if (typeFlags & ts.TypeFlags.NumberLike)
+            return new NumberSchema(isNumber(literalValue) ? literalValue : undefined)
+
+        if (typeFlags & ts.TypeFlags.BooleanLike)
+            return new BooleanSchema(
+                type.isAssignableTo(types.TrueType) ? true :
+                type.isAssignableTo(types.FalseType) ? false : undefined
+            )
+
+        if (typeFlags & ts.TypeFlags.BigIntLike)
+            return new BigIntSchema(typeof literalValue === "bigint" ? literalValue : undefined)
+
+        switch (type.getFlags()) {
+            case ts.TypeFlags.Null:
+                return NullSchema.instance
+            case ts.TypeFlags.Undefined:
+                return UndefinedSchema.instance
+            case ts.TypeFlags.Object: {
+                const indexType = indexTypeToSchema(type.getStringIndexType(), node)
+
+                const properties: ObjectSchema["properties"] = {}
+
+                for (const prop of type.getProperties()) {
+                    const required = !prop.isOptional()
+
+                    try {
+                        properties[prop.getName()] = {
+                            schema: typeToSchema(prop.getTypeAtLocation(node), node),
+                            required
+                        }
+                    } catch (err) {
+                        if (required) throw err
+                    }
+                }
+
+                return new ObjectSchema(properties, indexType)
+            }
+            default: {
+                throw new Error(`Unsupported type ${type.getText()}`)
+            }
+        }
+    }
+
+    function indexTypeToSchema(valueType: Type | undefined, node: Node): Schema | undefined
+    {
+        if (valueType === undefined) return undefined
+
+        try {
+            return typeToSchema(valueType, node)
+        } catch {
+            return undefined
+        }
+    }
+
+    return {
+        getSignature,
+        extractComponentData
+    }
+}
+
+export function extractComponents(project: Project, componentRoots: string[]): ComponentData[] {
+    const utils = createUtils(project)
+
+    const rootPaths = componentRoots.map(rootDir => path.resolve(rootDir).replace(/\\/g, "/"))
+
+    return project.getSourceFiles().map(sourceFile => {
+        const sourceFilePath = sourceFile.getFilePath()
+        if (!rootPaths.some(rootPath => sourceFilePath.startsWith(rootPath)))
+            return []
+
+        const exportNames = sourceFile.getExportDeclarations().map(declaration => {
+            const modulePath = declaration.getModuleSpecifier()
+
+            // skip if this is just re-export
+            if (modulePath != undefined) return null
+
+            return declaration.getNamedExports().map(namedExport => {
+                const symbol = namedExport.getSymbol()
+                if (!symbol) return null
+
+                const declarations = symbol.getDeclarations()
+
+                return utils.extractComponentData(declarations.map(utils.getSignature).find(isDefined), symbol, false)
+            }).flat()
+        }).flat()
+
+        const defaultExportSymbol = sourceFile.getDefaultExportSymbol()
+
+        const defaultExports = (defaultExportSymbol !== undefined ? [defaultExportSymbol] : []).map(defaultExport => {
+            const declarations = defaultExport.getDeclarations()
+
+            return utils.extractComponentData(declarations.map(utils.getSignature).find(isDefined), defaultExport, true)
+        })
+
+        const variableDeclaration = sourceFile.getVariableDeclarations().map(declaration => {
+            if (!declaration.isExported()) return null
+
+            const symbol = declaration.getSymbol()
+
+            if (symbol === undefined) return null
+
+            return utils.extractComponentData(utils.getSignature(declaration), symbol, false)
+        })
+
+        return [exportNames, variableDeclaration, defaultExports].flat().filter(isDefined)
+    }).flat()
+}
