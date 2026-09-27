@@ -16,7 +16,9 @@ export class BigIntSchema implements Schema {
     }
 
     toJson(): AsJson<typeof BigIntSchema> {
-        return {type: "bigint", literal: this.literal}
+        // bigint is not valid JSON; carry a literal (when present) as a decimal string, matching
+        // ValueJson's "bigint" variant encoding.
+        return {type: "bigint", ...(this.literal !== undefined ? {literal: this.literal.toString()} : {})}
     }
 
     verifyConstructType(construct: ValueConstruct): boolean {
@@ -27,9 +29,11 @@ export class BigIntSchema implements Schema {
         return this
     }
 
-    static readonly jsonSchema = makeSchema("bigint", {literal: z.bigint().optional()})
-    static readonly fromJson = (json: SchemaJson): BigIntSchema =>
-        new BigIntSchema(parseJson(json, BigIntSchema.jsonSchema).literal)
+    static readonly jsonSchema = makeSchema("bigint", {literal: z.string().optional()})
+    static readonly fromJson = (json: SchemaJson): BigIntSchema => {
+        const literal = parseJson(json, BigIntSchema.jsonSchema).literal
+        return new BigIntSchema(literal !== undefined ? BigInt(literal) : undefined)
+    }
     static readonly intersectionRules = [
         selfRule(BigIntSchema, "bigint", (a, b) => {
             if (a.literal === undefined) return b

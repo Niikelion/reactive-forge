@@ -16,7 +16,7 @@ export class BooleanSchema implements Schema {
     }
 
     toJson(): AsJson<typeof BooleanSchema> {
-        return {type: "boolean", literal: this.literal}
+        return {type: "boolean", ...(this.literal !== undefined ? {literal: this.literal} : {})}
     }
 
     verifyConstructType(construct: ValueConstruct): boolean {

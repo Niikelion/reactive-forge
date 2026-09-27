@@ -6,6 +6,8 @@ export * from "./commonSchemas"
 export * from "./intersection"
 export * from "./equality"
 export * from "./assignability"
+export * from "./ValueJson"
+export * from "./metadata"
 export * from "./Null";
 export * from "./Never";
 export * from "./Unknown";
