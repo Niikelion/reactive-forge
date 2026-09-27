@@ -25,7 +25,7 @@ export class ObjectSchema implements Schema {
             required: p.required,
         }))
 
-        return {type: "object", properties, indexType: this.indexType?.toJson()}
+        return {type: "object", properties, ...(this.indexType ? {indexType: this.indexType.toJson()} : {})}
     }
 
     verifyConstructType(construct: ValueConstruct): boolean {

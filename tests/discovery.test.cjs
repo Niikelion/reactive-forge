@@ -89,3 +89,90 @@ test('failed React type resolution also removes the temporary helper', () => {
   assert.throws(() => extractComponents(p, [source]), /Cannot find react types/);
   assert.deepEqual(p.getSourceFiles().map(file => file.getFilePath()), [source.replace(/\\/g, '/')]);
 });
+
+// --- Metadata contract: diagnostics, descriptions, defaults ---------------
+// See docs/metadata-contract.md and tests/fixtures/metadata/diagnostics.tsx.
+
+const metadataFixtures = path.join(__dirname, 'fixtures/metadata');
+
+function metadataProject() {
+  const result = new Project({
+    compilerOptions: {
+      strict: true,
+      jsx: ts.JsxEmit.ReactJSX,
+      target: ts.ScriptTarget.ESNext,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      skipLibCheck: true,
+      esModuleInterop: true,
+    },
+  });
+  result.addSourceFilesAtPaths(path.join(metadataFixtures, '**/*.{ts,tsx}'));
+  return result;
+}
+
+function byName(components, name) {
+  const found = components.find(component => component.name === name);
+  assert.ok(found, `expected a component named ${name}`);
+  return found;
+}
+
+test('a required prop with an unsupported type keeps its component present, with an error diagnostic on the prop and the component', () => {
+  const components = extractComponents(metadataProject(), [path.join(metadataFixtures, 'diagnostics.tsx')]);
+  // Must not vanish (the pre-fix defect: extractComponentData returning null).
+  const component = byName(components, 'RequiredUnsupported');
+  assert.ok('id' in component.args, 'unsupported required prop stays present in args');
+  assert.ok('title' in component.args);
+  const idDiagnostics = component.propMeta.id.diagnostics;
+  assert.ok(idDiagnostics.some(d => d.severity === 'error' && d.code === 'unsupported-type'));
+  assert.ok(component.diagnostics.some(d => d.severity === 'error' && d.code === 'unsupported-type' && d.message.includes('id')),
+    'component-level diagnostic explains the component is incomplete');
+});
+
+test('an optional prop with an unsupported type stays visible in props with a warning diagnostic', () => {
+  const components = extractComponents(metadataProject(), [path.join(metadataFixtures, 'diagnostics.tsx')]);
+  const component = byName(components, 'OptionalUnsupported');
+  assert.ok('id' in component.args, 'unsupported optional prop is not silently dropped from args');
+  assert.equal(component.args.id.required, false);
+  const idDiagnostics = component.propMeta.id.diagnostics;
+  assert.ok(idDiagnostics.some(d => d.severity === 'warning' && d.code === 'unsupported-type'));
+  // Optional-prop diagnostics don't need to escalate to a component-level one.
+  assert.ok(!component.diagnostics.some(d => d.code === 'unsupported-type'));
+});
+
+test('a literal destructured default is captured as a ValueJson, and a non-literal default is diagnosed, not evaluated', () => {
+  const components = extractComponents(metadataProject(), [path.join(metadataFixtures, 'diagnostics.tsx')]);
+  const component = byName(components, 'WithDefaults');
+  assert.deepEqual(component.propMeta.size.defaultValue, { type: 'string', value: 'medium' });
+  assert.equal(component.propMeta.scale.defaultValue, undefined, 'a function-call default is never evaluated');
+  assert.ok(component.propMeta.scale.diagnostics.some(d => d.severity === 'warning' && d.code === 'default-unsupported'));
+});
+
+test('JSDoc descriptions are captured on the component declaration and on prop property-signature members', () => {
+  const components = extractComponents(metadataProject(), [path.join(metadataFixtures, 'diagnostics.tsx')]);
+  const component = byName(components, 'WithDefaults');
+  assert.equal(component.description, 'Component with a literal destructured default and a non-literal one.');
+  assert.equal(component.propMeta.size.description, 'The size of the widget.');
+  // No doc comment on `scale` -> field must be absent, not an empty string.
+  assert.equal(component.propMeta.scale.description, undefined);
+});
+
+test('a non-object props type is diagnosed as props-not-object and the component still appears with empty props', () => {
+  const components = extractComponents(metadataProject(), [path.join(metadataFixtures, 'props-not-object.tsx')]);
+  const component = byName(components, 'BadProps');
+  assert.deepEqual(component.args, {});
+  assert.ok(component.diagnostics.some(d => d.severity === 'error' && d.code === 'props-not-object'));
+});
+
+test('extraction is deterministic across repeated runs on unchanged source (stable diagnostics/defaults/descriptions)', () => {
+  const p = metadataProject();
+  const roots = [path.join(metadataFixtures, 'diagnostics.tsx')];
+  const first = extractComponents(p, roots);
+  const second = extractComponents(p, roots);
+  const strip = components => components.map(c => ({
+    name: c.name, args: Object.keys(c.args).sort(), description: c.description,
+    propMeta: Object.fromEntries(Object.entries(c.propMeta).map(([k, v]) => [k, { ...v, diagnostics: v.diagnostics.map(d => [d.severity, d.code]) }])),
+    diagnostics: c.diagnostics.map(d => [d.severity, d.code]),
+  }));
+  assert.deepEqual(strip(second), strip(first));
+});

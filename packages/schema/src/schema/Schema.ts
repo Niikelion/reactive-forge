@@ -1,13 +1,15 @@
 import {z, ZodType} from "zod";
 import {ValueConstruct} from "@/schema/Construct";
 
-export type Json = null | undefined | string | number | bigint | boolean | Json[] | { [key: string]: Json }
+// JSON-safe: deliberately excludes `bigint` and `undefined`, neither of which is valid JSON.
+// A value that used to carry a raw bigint or undefined must instead use an explicit string/tag
+// encoding (see ValueJson's "bigint" and "undefined" variants) — never structurally reintroduce
+// either type here.
+export type Json = null | string | number | boolean | Json[] | { [key: string]: Json }
 export const Json: ZodType<Json> = z.union([
     z.null(),
-    z.undefined(),
     z.string(),
     z.number(),
-    z.bigint(),
     z.boolean(),
     z.lazy(() => Json.array()),
     z.lazy(() => z.record(Json))

@@ -90,6 +90,64 @@ test('generation refuses unrelated output files and sources outside rootDir', as
   }
 });
 
+test('metadata.json carries stable ids, relative source paths, and diagnostics; regenerates deterministically', async () => {
+  const directory = await fs.mkdtemp(path.join(root, '.cache-forge-generation-'));
+  try {
+    const outDir = path.join(directory, 'out');
+    const metadataFixtures = path.join(root, 'tests', 'fixtures', 'metadata');
+    const p = project();
+    p.addSourceFilesAtPaths(path.join(metadataFixtures, '**/*.{ts,tsx}'));
+    const components = extractComponents(p, [path.join(metadataFixtures, 'diagnostics.tsx')]);
+    const config = { outDir, rootDir: metadataFixtures, baseDir: metadataFixtures, pathPrefix: 'fixture/' };
+
+    await generateFiles(p, components, config, logger);
+    const firstDocument = JSON.parse(await fs.readFile(path.join(outDir, 'metadata.json'), 'utf8'));
+    assert.equal(firstDocument.schemaVersion, 1);
+    assert.equal(firstDocument.components.length, components.length);
+
+    const byName = Object.fromEntries(firstDocument.components.map(c => [c.name, c]));
+    assert.equal(byName.RequiredUnsupported.sourcePath, 'diagnostics.tsx');
+    assert.ok(byName.RequiredUnsupported.diagnostics.some(d => d.code === 'unsupported-type' && d.severity === 'error'));
+    assert.ok(byName.RequiredUnsupported.props.id.diagnostics.some(d => d.severity === 'error'));
+    assert.ok(byName.OptionalUnsupported.props.id.diagnostics.some(d => d.severity === 'warning'));
+    assert.deepEqual(byName.WithDefaults.props.size.defaultValue, { type: 'string', value: 'medium' });
+    assert.equal(byName.WithDefaults.props.scale.defaultValue, undefined);
+    assert.equal(typeof byName.WithDefaults.id, 'string');
+    assert.ok(byName.WithDefaults.id.length > 0);
+
+    // Regenerate against the same source: ids (and every field but
+    // generatedAt) must be stable across runs.
+    const secondComponents = extractComponents(p, [path.join(metadataFixtures, 'diagnostics.tsx')]);
+    await generateFiles(p, secondComponents, config, logger);
+    const secondDocument = JSON.parse(await fs.readFile(path.join(outDir, 'metadata.json'), 'utf8'));
+    const strip = doc => ({ ...doc, generatedAt: undefined });
+    assert.deepEqual(strip(secondDocument), strip(firstDocument));
+  } finally {
+    await removeTestOutput(directory);
+  }
+});
+
+test('a non-object props type is still emitted in metadata.json with a props-not-object diagnostic, not silently dropped', async () => {
+  const directory = await fs.mkdtemp(path.join(root, '.cache-forge-generation-'));
+  try {
+    const outDir = path.join(directory, 'out');
+    const metadataFixtures = path.join(root, 'tests', 'fixtures', 'metadata');
+    const p = project();
+    p.addSourceFilesAtPaths(path.join(metadataFixtures, '**/*.{ts,tsx}'));
+    const components = extractComponents(p, [path.join(metadataFixtures, 'props-not-object.tsx')]);
+    const config = { outDir, rootDir: metadataFixtures, baseDir: metadataFixtures, pathPrefix: 'fixture/' };
+
+    await generateFiles(p, components, config, logger);
+    const document = JSON.parse(await fs.readFile(path.join(outDir, 'metadata.json'), 'utf8'));
+    const badProps = document.components.find(c => c.name === 'BadProps');
+    assert.ok(badProps, 'component with an unrepresentable props type is still present in the document');
+    assert.deepEqual(badProps.props, {});
+    assert.ok(badProps.diagnostics.some(d => d.code === 'props-not-object' && d.severity === 'error'));
+  } finally {
+    await removeTestOutput(directory);
+  }
+});
+
 test('createCodegen propagates a generation error to API callers', async () => {
   const directory = await fs.mkdtemp(path.join(root, '.cache-forge-generation-'));
   try {

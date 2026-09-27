@@ -6,7 +6,7 @@ import {NeverSchema} from "@/schema/Never";
 import {equals} from "@/schema/equality";
 
 function sortKey(value: Json): string {
-    if (value === null || value === undefined) return String(value)
+    if (value === null) return String(value)
     if (typeof value === 'bigint') return `bigint:${String(value)}`
     if (typeof value !== 'object') return String(value)
     if (Array.isArray(value)) return `[${value.map(sortKey).join(',')}]`

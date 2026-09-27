@@ -16,7 +16,7 @@ export class StringSchema implements Schema {
     }
 
     toJson(): AsJson<typeof StringSchema> {
-        return {type: "string", literal: this.literal}
+        return {type: "string", ...(this.literal !== undefined ? {literal: this.literal} : {})}
     }
 
     verifyConstructType(construct: ValueConstruct): boolean {

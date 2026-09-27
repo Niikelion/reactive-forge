@@ -21,7 +21,7 @@ export class ArraySchema implements Schema {
         return {
             type: "array",
             tupleTypes: this.tupleTypes.map(tupleType => tupleType.toJson()),
-            indexType: this.indexType ? this.indexType.toJson() : undefined
+            ...(this.indexType ? {indexType: this.indexType.toJson()} : {})
         }
     }
 

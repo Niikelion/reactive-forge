@@ -16,7 +16,7 @@ export class NumberSchema implements Schema {
     }
 
     toJson(): AsJson<typeof NumberSchema> {
-        return {type: "number", literal: this.literal}
+        return {type: "number", ...(this.literal !== undefined ? {literal: this.literal} : {})}
     }
 
     verifyConstructType(construct: ValueConstruct): boolean {
