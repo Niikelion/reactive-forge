@@ -11,6 +11,7 @@ import path from "path"
 import fs from "fs/promises"
 import {createCodegen, fillConfig, ForgeConfig} from "./index.js"
 import {createLogger} from "./utils.js";
+import {bundleLibrary} from "./bundle.js";
 
 program.name("forge").version(version)
 
@@ -179,6 +180,37 @@ program
         const configDir = path.dirname(config.path)
 
         await createCodegen(fillConfig(config.data, configDir), logger)
+    })
+program
+    .command("bundle")
+    .description("Bundles an already-generated component registry as a standalone browser ESM module, with react/react-dom left external for the host to supply")
+    .option("--config <path>", "location to config file")
+    .option("-s, --silent", "Disables logging except errors", false)
+    .action(async (options) => {
+        const logger = createLogger({
+            silent: options.silent,
+            prefix: true
+        })
+        const { loadConfig } = await import("load-config-ts")
+
+        const configFile = options.config ?? "./forge.config.ts"
+        const config = await loadConfig<ForgeConfig>({
+            cwd: process.cwd(),
+            configKey: "forge",
+            configFile
+        })
+
+        if (config.path === undefined) {
+            throw new Error(`Could not load config${options.config !== undefined ? ` at ${configFile}` : ""}`)
+        }
+
+        // Same config-relative anchoring as "codegen" (see fillConfig): the
+        // bundle command reads the same forge.config.ts, so `outDir` must
+        // resolve identically regardless of invocation cwd.
+        const configDir = path.dirname(config.path)
+        const filled = fillConfig(config.data, configDir)
+
+        await bundleLibrary({ outDir: filled.outDir }, logger)
     })
 program.helpCommand(true)
 
