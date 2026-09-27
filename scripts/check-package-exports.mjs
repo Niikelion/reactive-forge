@@ -8,6 +8,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
 const packages = [
   '@reactive-forge/schema',
+  '@reactive-forge/runtime',
   '@reactive-forge/codegen',
   '@reactive-forge/eslint-config',
 ];

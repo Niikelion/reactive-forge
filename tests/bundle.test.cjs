@@ -114,7 +114,20 @@ test('forge bundle produces a standalone browser ESM bundle that excludes unrela
     const registry = await import(pathToFileURL(bundlePath).href);
     const file = registry.components.files.find(f => f.path.endsWith('Greeter'));
     assert.ok(file, 'registry contains the Greeter file entry');
-    const Component = file.components.Greeter.component;
+
+    // Registry lookup by the stable metadata id (docs/baseline.md's "Known
+    // gap", now fixed): the registry entry's own `id` must match
+    // metadata.json's id for the same component, and a host must be able to
+    // resolve purely by id, not by matching path/name heuristics.
+    assert.equal(file.components.Greeter.id, target.id, 'registry entry id matches metadata.json id for the same component');
+    let entry;
+    for (const candidateFile of registry.components.files) {
+      for (const candidate of Object.values(candidateFile.components)) {
+        if (candidate.id === target.id) entry = candidate;
+      }
+    }
+    assert.ok(entry, 'a registry entry can be found purely by metadata id');
+    const Component = entry.component;
     assert.equal(typeof Component, 'function');
 
     const React = require('react');

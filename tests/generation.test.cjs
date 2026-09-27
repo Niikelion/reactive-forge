@@ -54,6 +54,17 @@ test('barrel exports, punctuation and source index resolve through the generated
     assert.notStrictEqual(byPath['fixture/a-b'].components.Thing.component, byPath['fixture/a_b'].components.Thing.component);
     assert.equal(byPath['fixture/components'].components.Example.component().props['data-source'], 'components');
     assert.ok(await fs.stat(path.join(outDir, '__reactive_forge_files', 'index.ts.ts')));
+
+    // Registry entries carry the same stable `id` as metadata.json (see
+    // packages/codegen/src/hash.ts's componentId, used by both) - lookup by
+    // id must work without relying on the file/name keying above.
+    const metadataDocument = JSON.parse(await fs.readFile(path.join(outDir, 'metadata.json'), 'utf8'));
+    const publicThingMeta = metadataDocument.components.find(c => c.name === 'PublicThing');
+    assert.ok(publicThingMeta, 'metadata.json describes PublicThing');
+    assert.equal(byPath['fixture/index'].components.PublicThing.id, publicThingMeta.id);
+    const { findComponentEntry } = require('../packages/schema/src/component.ts');
+    const found = findComponentEntry(require(path.join(outDir, 'index.ts')).components, publicThingMeta.id);
+    assert.strictEqual(found.component, original);
   } finally {
     await removeTestOutput(directory);
   }
