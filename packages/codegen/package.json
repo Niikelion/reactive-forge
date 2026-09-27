@@ -3,24 +3,24 @@
   "version": "1.0.0",
   "license": "MIT",
   "type": "module",
-  "main": "dist/index.js",
-  "module": "dist/index.mjs",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist",
     "package.json"
   ],
   "bin": {
-    "forge": "./dist/bin.mjs"
+    "forge": "./dist/bin.js"
   },
   "exports": {
     "import": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     },
     "require": {
-      "types": "./dist/index.d.ts",
-      "require": "./dist/index.js"
+      "types": "./dist/index.d.cts",
+      "require": "./dist/index.cjs"
     }
   },
   "scripts": {
@@ -33,6 +33,7 @@
     "@types/prompts": "^2.4.9",
     "commander": "^13.1.0",
     "dedent": "^1.5.3",
+    "esbuild": "^0.28.2",
     "kleur": "^4.1.5",
     "load-config-ts": "^0.1.0",
     "prompts": "^2.4.2",

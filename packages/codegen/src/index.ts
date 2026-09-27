@@ -50,7 +50,7 @@ export const createCodegen = async (config: CodegenConfig, logger?: ReturnType<t
     if (config.reactTypesFilePath !== undefined) {
         const f = project.addSourceFileAtPathIfExists(config.reactTypesFilePath)
         if (f === undefined)
-            logger.error("Couldn't find specified react types file!")
+            throw new Error("Couldn't find specified react types file!")
     }
 
     if (config.debug) {
@@ -58,12 +58,8 @@ export const createCodegen = async (config: CodegenConfig, logger?: ReturnType<t
         logger.error(project.formatDiagnosticsWithColorAndContext(diagnostics))
     }
 
-    try {
-        const logFinished = logger.timing("Extracted components", true)
-        const components = extractComponents(project, config.componentRoots)
-        await generateFiles(project, components, config, logger)
-        logFinished()
-    } catch (err) {
-        logger.error(err instanceof Error ? err.toString() : "Unknown error")
-    }
+    const logFinished = logger.timing("Extracted components", true)
+    const components = extractComponents(project, config.componentRoots)
+    await generateFiles(project, components, config, logger)
+    logFinished()
 }

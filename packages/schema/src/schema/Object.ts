@@ -25,7 +25,7 @@ export class ObjectSchema implements Schema {
             required: p.required,
         }))
 
-        return {type: "object", properties}
+        return {type: "object", properties, indexType: this.indexType?.toJson()}
     }
 
     verifyConstructType(construct: ValueConstruct): boolean {
@@ -36,20 +36,14 @@ export class ObjectSchema implements Schema {
         // Check that every required property is provided
         if (!hasAllRequiredProperties) return false
 
-        const hasIndex = this.indexType !== undefined
-
         return [...Object.entries(construct.value)].every(([propName, propValue]) => {
-
-            // If index exists, verify with index
-            if (this.indexType?.verifyConstructType(propValue))
-                return false
 
             // If explicitly defined, verify with property schema
             if (propName in this.properties)
                 return this.properties[propName]?.schema.verifyConstructType(propValue) ?? false
 
-            // Not in props, it's ok if we have index because we checked earlier that it matched index schema
-            return hasIndex
+            // Not explicitly defined, it's valid only if the index type accepts it
+            return this.indexType?.verifyConstructType(propValue) ?? false
         })
     }
 
@@ -62,13 +56,15 @@ export class ObjectSchema implements Schema {
         properties: z.record(z.object({
             schema: SchemaJson,
             required: z.boolean()
-        }))
+        })),
+        indexType: SchemaJson.optional()
     })
     static readonly fromJson = (json: SchemaJson): ObjectSchema => {
-        return new ObjectSchema(mapValues(parseJson(json, ObjectSchema.jsonSchema).properties, p => ({
+        const parsed = parseJson(json, ObjectSchema.jsonSchema)
+        return new ObjectSchema(mapValues(parsed.properties, p => ({
             required: p.required,
             schema: schemaFromJson(p.schema)
-        })))
+        })), parsed.indexType ? schemaFromJson(parsed.indexType) : undefined)
     }
     static readonly intersectionRules = [
         selfRule(ObjectSchema, "object", (a, b) => {

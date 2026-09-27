@@ -170,12 +170,19 @@ program
         })
 
         if (config.path === undefined) {
-            logger.error(`Could not load config${options.config !== undefined ? ` at ${configFile}` : ""}`)
-            return
+            throw new Error(`Could not load config${options.config !== undefined ? ` at ${configFile}` : ""}`)
         }
 
-        await createCodegen(fillConfig(config.data), logger)
+        // Anchor config-relative paths (rootDir, baseDir, outDir, etc.) to the
+        // config file's own directory, not the process's current working
+        // directory, so the CLI behaves the same regardless of invocation cwd.
+        const configDir = path.dirname(config.path)
+
+        await createCodegen(fillConfig(config.data, configDir), logger)
     })
 program.helpCommand(true)
 
-program.parseAsync().catch(console.error)
+program.parseAsync().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+})

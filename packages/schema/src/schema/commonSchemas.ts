@@ -41,7 +41,12 @@ export const commonTypes: Record<string, SchemaModule> = {
     function: FunctionSchema,
 }
 
+let commonSchemasRegistered = false
+
 export function registerCommonSchemas() {
+    if (commonSchemasRegistered) return
+    commonSchemasRegistered = true
+
     for (const [name, module] of Object.entries(commonTypes)) {
         registerSchemaFactory(name, module.fromJson)
         for (const rule of module.intersectionRules) registerIntersectionRule(rule)
