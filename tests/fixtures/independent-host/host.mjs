@@ -27,19 +27,19 @@ async function main() {
     if (target === undefined) throw new Error("Fixture component \"Greeter\" not found in metadata.json");
     const selectedId = target.id;
 
-    // KNOWN GAP (see docs/baseline.md "Portable bundle (gate C)"): the
-    // generated registry (bundle.js's `components.files[].components`) is
-    // still keyed by source-relative path + export name, not yet by the
-    // metadata `id` the contract document describes as the intended lookup
-    // key. Until generate.ts is changed to key the registry by `id` (out of
-    // this gate's file ownership - generate.ts is gate B, frozen), a host
-    // resolves an id to a registry entry by matching metadata's sourcePath
-    // basename + name against the registry's file path + component name.
-    const baseName = target.sourcePath.split("/").pop().replace(/\.(tsx?|jsx?)$/, "");
-    const file = registryModule.components.files.find(f => f.path === `${baseName}` || f.path.endsWith(`/${baseName}`));
-    if (file === undefined) throw new Error(`No registry file matched metadata sourcePath "${target.sourcePath}" (looked for basename "${baseName}")`);
-    const entry = file.components[target.name];
-    if (entry === undefined) throw new Error(`No registry component named "${target.name}" in file "${file.path}"`);
+    // The generated registry's entries now carry the same stable `id` that
+    // metadata.json uses (packages/codegen/src/hash.ts's `componentId`, used
+    // both by generate.ts's registry entries and its metadata.json output),
+    // so a host resolves a metadata id straight to a registry entry - no more
+    // path/name heuristic matching (previously a documented known gap here).
+    let entry;
+    for (const file of registryModule.components.files) {
+        for (const candidate of Object.values(file.components)) {
+            if (candidate.id === selectedId) { entry = candidate; break; }
+        }
+        if (entry !== undefined) break;
+    }
+    if (entry === undefined) throw new Error(`No registry component with id "${selectedId}" (metadata name "${target.name}")`);
 
     const React = await import("react");
     const { createRoot } = await import("react-dom/client");

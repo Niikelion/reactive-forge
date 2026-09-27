@@ -1,0 +1,38 @@
+{
+  "name": "@reactive-forge/runtime",
+  "version": "1.0.0",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "/dist"
+  ],
+  "exports": {
+    "import": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "require": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "lint": "eslint \"**/*.ts\"",
+    "build": "tsdown && attw --pack ."
+  },
+  "dependencies": {
+    "@reactive-forge/schema": "1.0.0",
+    "react": "^19.1.0"
+  },
+  "devDependencies": {
+    "@gamedev-sensei/ts-config": "^2.0.1",
+    "@gamedev-sensei/tsdown-config": "^2.0.1",
+    "@reactive-forge/eslint-config": "0.1.0",
+    "@types/react": "^19.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
