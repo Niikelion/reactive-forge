@@ -255,7 +255,11 @@ function ComponentRefOutlet({
                     disabled={!result.ok}
                     title={result.ok ? undefined : result.diagnostics.map(d => d.message).join("; ")}
                     onClick={() => {
-                        const outcome = onSet({source: "project", id: component.id})
+                        // Same fix as packages/editor/src/slots.ts's computeComponentRefPalette:
+                        // an external candidate must be set by its own external identity, not a
+                        // hardcoded project identity.
+                        const identity: ComponentIdentity = component.external ?? {source: "project", id: component.id}
+                        const outcome = onSet(identity)
                         setLastRejection(outcome.ok ? null : (outcome.reason ?? "Rejected."))
                     }}
                 >

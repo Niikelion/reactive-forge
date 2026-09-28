@@ -285,28 +285,20 @@ test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + 
     assert.match(tsxSource, /<Badge\s*\/>/, 'the external Badge instance serializes as real JSX, not dropped or stubbed');
     assert.match(tsxSource, /import \{ Badge \} from/, 'an import statement naming Badge is generated for the external "nodes"-item instance');
 
-    // --- Real, documented finding: packages/runtime/src/export.ts's collectInstanceComponentIds
-    // (the function that walks a "nodes" slot's CompositionSlotItem instances to build the import
-    // table) unconditionally records every such instance as `{source: "project", id: node.componentId}`
-    // - it never checks whether that componentId's ComponentMetadata entry has `.external` set,
-    // unlike the componentRef/element-reference paths in the same file, which DO correctly
-    // preserve source. The generated import specifier is therefore built from
-    // `ComponentMetadata.sourcePath` (which, for an external component, is the absolute resolved
-    // `.d.ts` path - "for diagnostics only, never re-derived as identity" per
-    // docs/slot-contract.md section 5) instead of `ExternalComponentIdentity.package`. This is a
-    // real, reproducible bug in a file outside this phase's ownership (packages/runtime/src/**) -
-    // asserted here, not silently patched around, so it is tracked rather than lost. See this
-    // test's own report / docs/baseline.md's phase 4 section for the exact browser-reproduced
-    // import line.
-    assert.doesNotMatch(
+    // --- Fixed (was a real, documented bug found by this phase's own demo work):
+    // packages/runtime/src/export.ts's collectInstanceComponentIds previously recorded every
+    // "nodes"-slot instance as `{source: "project", id: node.componentId}` unconditionally, never
+    // checking whether that componentId's ComponentMetadata entry had `.external` set - unlike the
+    // componentRef/element-reference paths in the same file, which already preserved source
+    // correctly. Both collectInstanceComponentIds and renderInstanceJsx's matching import-table
+    // lookup now resolve the real identity (instanceImportKeyAndIdentity), so the generated import
+    // is the real package specifier, not a broken path built from the external component's
+    // .d.ts-resolution sourcePath (which docs/slot-contract.md section 5 explicitly says is "for
+    // diagnostics only, never re-derived as identity"). ---
+    assert.match(
       tsxSource,
       /import \{ Badge \} from "rf-demo-widgets"/,
-      'KNOWN BUG (packages/runtime/src/export.ts collectInstanceComponentIds, not owned by this phase): ' +
-      'a "nodes"-slot instance referencing an external component does not yet generate the correct ' +
-      '`import { Badge } from "rf-demo-widgets"` - it wrongly treats the instance as a project component ' +
-      'and builds a broken import from the external component\'s resolved .d.ts path instead. ' +
-      'If this assertion starts failing, the bug has been fixed upstream - flip this to assert.match ' +
-      'and delete this comment.'
+      'a "nodes"-slot instance referencing an external component generates the correct import specifier'
     );
 
     // --- The genuine positive "compiles and renders byte-identical output" proof, for the part of
