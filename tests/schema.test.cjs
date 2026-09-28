@@ -377,6 +377,10 @@ const libraryWithButton = {
   }],
 };
 
+// A library that never registered `button-1` - simulates stale metadata vs. a trimmed bundle, or a
+// config/library mismatch (independent review finding, docs/baseline.md).
+const libraryWithoutButton = {files: []};
+
 test('S37: resolveSlotPolicy returns an explicit rule for a path with an authored SlotRule', () => {
   const rule = resolveSlotPolicy(cardMetadata, ['actions', each()]);
   assert.equal(rule.slot.kind, 'components');
@@ -446,4 +450,40 @@ test('S43: checkSlotValue accepts a richText value matching an inline policy and
   );
   assert.equal(rejected.ok, false);
   assert.equal(rejected.diagnostics[0].code, 'richtext-mark-not-accepted');
+});
+
+test('S44: checkSlotValue rejects an accepts-list match that is not actually registered in the library (independent review finding)', () => {
+  // A "components"-policy instance item: accepts-list match alone must not be enough.
+  const rule = resolveSlotPolicy(cardMetadata, ['actions', each()]);
+  const instanceResult = checkSlotValue(
+    rule,
+    {itemId: 'i5', kind: 'instance', instance: {componentId: 'button-1'}},
+    {library: libraryWithoutButton, currentItemCount: 0, currentNonVoidCount: 0}
+  );
+  assert.equal(instanceResult.ok, false);
+  assert.equal(instanceResult.diagnostics[0].code, 'component-not-in-library');
+
+  // A componentRef-policy identity: same requirement.
+  const refRule = {
+    path: ['icon'],
+    slot: {kind: 'componentRef', accepts: [buttonIdentity]},
+    appliedFrom: {slot: 'library'},
+  };
+  const refResult = checkSlotValue(
+    refRule,
+    buttonIdentity,
+    {library: libraryWithoutButton, currentItemCount: 0, currentNonVoidCount: 0}
+  );
+  assert.equal(refResult.ok, false);
+  assert.equal(refResult.diagnostics[0].code, 'component-not-in-library');
+
+  // Control: the same checks pass once the library actually registers the identity.
+  const instanceOk = checkSlotValue(
+    rule,
+    {itemId: 'i6', kind: 'instance', instance: {componentId: 'button-1'}},
+    {library: libraryWithButton, currentItemCount: 0, currentNonVoidCount: 0}
+  );
+  assert.equal(instanceOk.ok, true);
+  const refOk = checkSlotValue(refRule, buttonIdentity, {library: libraryWithButton, currentItemCount: 0, currentNonVoidCount: 0});
+  assert.equal(refOk.ok, true);
 });

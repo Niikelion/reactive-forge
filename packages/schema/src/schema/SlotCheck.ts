@@ -138,11 +138,35 @@ function checkRichText(policy: SlotPolicy, candidate: RichTextValueJson): SlotCh
     return diagnostics.length > 0 ? {ok: false, diagnostics} : OK
 }
 
-function checkComponentRef(policy: SlotPolicy, candidate: ComponentIdentity): SlotCheckResult {
+// Verifies `candidate` is actually resolvable in `library`, not just present in an `accepts` list —
+// an `accepts` match alone doesn't prove the identity resolves to a real registry entry (stale
+// metadata vs. a trimmed bundle, a config/library mismatch, etc.). Mirrors `checkSlotItem`'s "any"
+// branch, which already did this for a plain node instance; `checkComponentRef` and the
+// "components"-policy branch of `checkSlotItem` previously skipped it, so a rule with a matching
+// but unregistered identity would pass validation and only fail later, inside `renderComposition`,
+// with a raw thrown `Error` instead of a diagnosed `CompositionValidationError` (flagged in
+// independent review, docs/baseline.md).
+//
+// Only a "project" identity can be checked here: its `id` is exactly `ComponentEntry.id`
+// (docs/metadata-contract.md's stable component identity), so `findComponentEntry` resolves it
+// directly. An "external" identity's registry id is computed by codegen from
+// package/subpath/exportName (docs/slot-contract.md section 5) — `packages/schema` does not own
+// that hash formula and must not duplicate it here (the same "one shared computation, never two"
+// principle `packages/codegen/src/hash.ts`'s `componentId` already enforces for project ids), so an
+// external identity is not verified against the library at this layer; it still passes `accepts`
+// checking as before. This is a narrower, documented residual gap, not a silent regression.
+function isResolvableInLibrary(identity: ComponentIdentity, library: ComponentLibraryData): boolean {
+    if (identity.source !== "project") return true
+    return findComponentEntry(library, identity.id) !== undefined
+}
+
+function checkComponentRef(policy: SlotPolicy, candidate: ComponentIdentity, context: SlotCheckContext): SlotCheckResult {
     if (policy.kind !== "componentRef")
         return fail("policy-type-mismatch", `A component reference is not accepted by a "${policy.kind}" policy`)
     if (!acceptsIdentity(policy.accepts, candidate))
         return fail("component-not-accepted", "Component identity is not in this slot's accepted list")
+    if (!isResolvableInLibrary(candidate, context.library))
+        return fail("component-not-in-library", "Component identity is accepted but not registered in the component library")
     return OK
 }
 
@@ -170,8 +194,11 @@ function checkSlotItem(policy: SlotPolicy, candidate: SlotItemCandidate, context
     }
 
     // policy.kind === "components"
-    if (!acceptsIdentity(policy.accepts, {source: "project", id: candidate.instance.componentId}))
+    const projectIdentity: ComponentIdentity = {source: "project", id: candidate.instance.componentId}
+    if (!acceptsIdentity(policy.accepts, projectIdentity))
         return fail("component-not-accepted", `Component "${candidate.instance.componentId}" is not in this slot's accepted list`)
+    if (!findComponentEntry(context.library, candidate.instance.componentId))
+        return fail("component-not-in-library", `Component "${candidate.instance.componentId}" is accepted but not registered in the component library`)
     return OK
 }
 
@@ -192,6 +219,6 @@ export function checkSlotValue(
     const policy = rule.slot
 
     if (isRichTextValue(candidate)) return checkRichText(policy, candidate)
-    if (isComponentIdentity(candidate)) return checkComponentRef(policy, candidate)
+    if (isComponentIdentity(candidate)) return checkComponentRef(policy, candidate, context)
     return checkSlotItem(policy, candidate, context)
 }
