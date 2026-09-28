@@ -1,51 +1,70 @@
-import type {
+import {
     ComponentIdentity,
     ComponentLibraryData,
     ComponentMetadata,
     ExternalComponentIdentity,
     MetadataDocument,
+    resolveSlotPolicy,
     RichTextBlockNode,
     RichTextTextNode,
     RichTextValueJson,
+    SlotPath,
     ValueJson
 } from "@reactive-forge/schema"
-import {CompositionDocument, CompositionInstance, CompositionPropValue, CompositionSlotItem} from "./composition.js"
-import {resolvePropSlotRules, validateComposition} from "./validate.js"
+import {
+    CompositionDocument,
+    CompositionInstance,
+    CompositionPropValue,
+    CompositionSlotItem,
+    CompositionValue
+} from "./composition.js"
+import {validateComposition} from "./validate.js"
 import {CompositionValidationError} from "./render.js"
 
-// Composition-to-TSX export (gate E, extended for slots — docs/slot-contract.md section 9).
-// Pure source-text generation - no compiler dependency (no ts-morph/typescript/esbuild),
-// deliberately, so this can live in @reactive-forge/runtime without breaking its "browser runtime
-// independent of compiler tooling" contract (docs/baseline.md, "Runtime (gate D, part 1)").
+// Composition-to-TSX export (gate E, extended for slots — docs/slot-contract.md section 9, then
+// generalized to the recursive v3 value model — docs/slot-contract-recursive.md section 5). Pure
+// source-text generation - no compiler dependency (no ts-morph/typescript/esbuild), deliberately, so
+// this can live in @reactive-forge/runtime without breaking its "browser runtime independent of
+// compiler tooling" contract (docs/baseline.md, "Runtime (gate D, part 1)").
 //
-// v2: accepts the v2 CompositionDocument shape only (composition.ts's plain, unsuffixed names -
-// see that file's versioning doc comment). A schemaVersion: 1 document is refused with a plain
-// Error naming migrateCompositionDocumentV1ToV2 as the required step, matching validate.ts's
-// "unsupported-schema-version" rejection (exportToTsx has no CompositionDiagnostic machinery of
-// its own, so this stays a thrown Error, as the v1 exporter already did for its own version gate).
+// v3: accepts the v3 CompositionDocument shape only (composition.ts's plain, unsuffixed names -
+// see that file's versioning doc comment). A schemaVersion 1/2 document is refused with a plain
+// Error naming the required migration step(s), matching validate.ts's "unsupported-schema-version"
+// rejection (exportToTsx has no CompositionDiagnostic machinery of its own, so this stays a thrown
+// Error, as the v1/v2 exporters already did for their own version gates).
 //
-// "nodes"/"richText"/"componentRef" prop values are serialized to mirror render.ts's real,
-// current v2 rendering EXACTLY, in source-text form (docs/slot-contract.md section 9's explicit
-// "mirroring rendering exactly in source-text form" requirement):
-//  - "nodes": each CompositionSlotItem in order ("instance" -> nested JSX element, "text" ->
-//    a string literal expression, "void" -> `null`), wrapped in a Fragment (`<>...</>`) when
-//    there is more than one item OR the resolved policy has `multiple === true` **literally set as
-//    an own key** on the resolved EffectiveSlotRule.slot - the exact `"multiple" in slot` check
-//    render.ts's renderSlotValue already implements (not the type-level "default true" prose in
-//    docs/slot-contract.md section 3's AnyNodePolicy comment); a single-item non-multiple slot
-//    stays bare, exactly matching render.ts's `rendered.length === 1 && !multiple` branch.
+// serializeCompositionValue mirrors render.ts's renderCompositionValue EXACTLY, in the SAME
+// dispatch shape (docs/slot-contract-recursive.md section 5's table), in source-text form:
+//  - "leaf": serializeValueExpression - unchanged plain ValueJson serialization.
+//  - "object"/"array"/"variant": the NEW recursive cases - an object-literal/array-literal
+//    expression per field/entry, or (for "variant") a transparent pass-through. The "array" case
+//    directly replaces v2's isDeclaredArrayProp/serializeSlotArrayExpression special case entirely:
+//    a declared TypeScript array is now represented by a real "array" CompositionValue node whose
+//    entries are independently "nodes"-kind-or-not, so a real array-literal expression with each
+//    entry's own independent Fragment-wrapping falls out of the SAME "nodes" dispatch used
+//    everywhere else in the tree - this is the literal flat-array-gap closure (contract worked
+//    example 8.3).
+//  - "nodes": each CompositionSlotItem in order ("instance" -> nested JSX element, "text" -> a
+//    string literal expression, "void" -> `null`), wrapped in a Fragment (`<>...</>`) when there is
+//    more than one item OR the resolved policy has `multiple === true` literally set as an own key
+//    on the resolved EffectiveSlotRule.slot - the exact condition render.ts's renderNodesValue
+//    checks, resolved at THIS node's own exact SlotPath via `resolveSlotPolicy` directly (no longer
+//    routed through the old top-level-only `resolvePropSlotRules`).
 //  - "richText": the same fixed <strong>/<em>/<p>/<ul>/<ol>/<li> mapping render.ts's
 //    renderRichText*Node functions produce, as literal JSX source text, wrapped in `<>...</>`.
 //  - "componentRef": a bare identifier expression (`prop={Button}`), never JSX-wrapped, never
 //    called - with an import added for the referenced ComponentIdentity (project or external).
 //
-// `children` is NOT a special case here (docs/slot-contract.md section 9's explicit "no longer a
-// special case in your exporter's own logic"): it is just another `"nodes"`-kind prop, serialized
-// as a JSX attribute (`children={...}`) exactly like any other prop - never nested JSX children
-// syntax. `<Tag children={expr} />` and `<Tag>{expr}</Tag>` produce the identical React element, so
-// this loses nothing while collapsing what used to be two code paths (renderChildJsx/
-// renderInstanceJsx's separate children-nesting logic) into the single serializePropFragment path
-// every other prop already uses.
+// `children` is NOT a special case here: it is just another `"composed"`-kind prop whose value
+// happens to be `"nodes"`-kind, serialized as a JSX attribute (`children={...}`) exactly like any
+// other prop - never nested JSX children syntax.
+//
+// `collectValueComponentIds`'s old v2 "element" case is DELETED ENTIRELY (not merely dead-code-
+// unreachable): a v3 "leaf" CompositionValue can never contain a legacy "element" node at all
+// (docs/slot-contract-recursive.md section 1.4, enforced by validate.ts's `containsLegacyElement`
+// upstream of export), so there is nothing left for a ValueJson-walking import collector to find.
+// The import table is now built by walking `CompositionValue` itself (`collectCompositionValueComponentIds`
+// below), never by walking a leaf's own `ValueJson`.
 
 export interface ExportOptions {
     /**
@@ -74,29 +93,28 @@ export interface ExportOptions {
 }
 
 /**
- * Renders a v2 `CompositionDocument` back into TSX source text: import statements for every
- * distinct component the tree references - as a nested instance, a `"value"` prop's embedded
- * `"element"` reference, or a `"componentRef"` prop value (project or external identity) - and a
- * single exported component whose JSX body mirrors the composition tree exactly.
+ * Renders a v3 `CompositionDocument` back into TSX source text: import statements for every
+ * distinct component the tree references - as a nested instance or a `"componentRef"` prop value
+ * (project or external identity) - and a single exported component whose JSX body mirrors the
+ * composition tree exactly.
  *
- * Real bug fixed (Codex repair handoff finding #4): this previously never validated `doc` at all,
- * despite docs/slot-contract.md section 8 explicitly naming "export preflight" as one of the
- * consumers required to share the SAME validation `renderComposition`/document-load use - its own
- * doc comment used to delegate that responsibility entirely to the caller, contradicting the
- * contract. `exportToTsx` now requires `library` (needed to run `validateComposition`, the exact
- * function `renderComposition` also runs before rendering) and throws `CompositionValidationError`
- * - the same error type/shape `renderComposition` throws, not a parallel one - before serializing
- * anything, so a document with a forbidden nested component, a disallowed rich-text mark, or
- * excess cardinality can never produce TSX source text at all. Runs with no `callbacks` registry
- * (export has nothing live to check callback names against - it only ever emits `callbacks.name`
- * symbolically), so an `unresolved-callback` diagnostic is not raised here; every other check
- * (slot policy, required props, value types, component registration) still runs in full.
+ * `exportToTsx` requires `library` (needed to run `validateComposition`, the exact function
+ * `renderComposition` also runs before rendering) and throws `CompositionValidationError` - the
+ * same error type/shape `renderComposition` throws, not a parallel one - before serializing
+ * anything, so a document with a forbidden nested component, a disallowed rich-text mark, excess
+ * cardinality, or a legacy `"element"` node hidden inside a `"leaf"` value can never produce TSX
+ * source text at all. Runs with no `callbacks` registry (export has nothing live to check callback
+ * names against - it only ever emits `callbacks.name` symbolically), so an `unresolved-callback`
+ * diagnostic is not raised here; every other check (slot policy, required props, value types,
+ * component registration, the legacy-`"element"` ban) still runs in full.
  */
 export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument, library: ComponentLibraryData, options: ExportOptions = {}): string {
     const schemaVersion: number = doc.schemaVersion
     if (schemaVersion === 1)
-        throw new Error(`exportToTsx: composition schemaVersion 1 is not accepted by the v2 exporter; call migrateCompositionDocumentV1ToV2(doc) first`)
-    if (schemaVersion !== 2)
+        throw new Error(`exportToTsx: composition schemaVersion 1 is not accepted by the v3 exporter; call migrateCompositionDocumentV1ToV2(doc) then migrateCompositionDocumentV2ToV3(doc, metadata) first`)
+    if (schemaVersion === 2)
+        throw new Error(`exportToTsx: composition schemaVersion 2 is not accepted by the v3 exporter; call migrateCompositionDocumentV2ToV3(doc, metadata) first`)
+    if (schemaVersion !== 3)
         throw new Error(`exportToTsx: unsupported composition schemaVersion: ${String(schemaVersion)}`)
 
     const validation = validateComposition(doc, metadata, library)
@@ -174,38 +192,41 @@ function findComponentMetaByIdentity(metadata: MetadataDocument, sourcePath: str
     return meta
 }
 
-// Walks a single ValueJson value for nested "element" references (a single nested-component
-// reference embedded in an ordinary prop, distinct from a "nodes"-kind slot) - always a project
-// component, per the unchanged v1 ValueJson "element" variant shape.
-function collectValueComponentIds(value: ValueJson, ids: Map<ImportKey, ComponentIdentity>, metadata: MetadataDocument): void {
-    switch (value.type) {
-        case "array":
-            for (const item of value.value) collectValueComponentIds(item, ids, metadata)
-            return
-        case "object":
-            for (const item of Object.values(value.value)) collectValueComponentIds(item, ids, metadata)
-            return
-        case "element": {
-            const meta = findComponentMetaByIdentity(metadata, value.value.path, value.value.name)
-            ids.set(projectKey(meta.id), {source: "project", id: meta.id})
-            for (const arg of Object.values(value.value.args)) collectValueComponentIds(arg, ids, metadata)
-            return
-        }
-        default:
-            return
-    }
-}
-
 function collectSlotItemComponentIds(item: CompositionSlotItem, ids: Map<ImportKey, ComponentIdentity>, metadata: MetadataDocument): void {
     if (item.kind === "instance") collectInstanceComponentIds(item.instance, ids, metadata)
 }
 
+// Walks a CompositionValue for nested component references needing an import - the v3
+// generalization of the old (now-deleted) ValueJson-walking `collectValueComponentIds`. A "leaf"
+// contributes nothing (a validated v3 leaf can never contain "element" - section 1.4).
+function collectCompositionValueComponentIds(value: CompositionValue, ids: Map<ImportKey, ComponentIdentity>, metadata: MetadataDocument): void {
+    switch (value.kind) {
+        case "leaf":
+            return
+        case "componentRef":
+            ids.set(identityKey(value.value), value.value)
+            return
+        case "richText":
+            return
+        case "nodes":
+            for (const item of value.value.items) collectSlotItemComponentIds(item, ids, metadata)
+            return
+        case "object":
+            for (const child of Object.values(value.fields)) collectCompositionValueComponentIds(child, ids, metadata)
+            return
+        case "array":
+            for (const item of value.items) collectCompositionValueComponentIds(item.value, ids, metadata)
+            return
+        case "variant":
+            collectCompositionValueComponentIds(value.value, ids, metadata)
+            return
+    }
+}
+
 // Real bug fixed (phase 4 demo work surfaced it): this previously always registered a "nodes"-slot
 // instance under `projectKey(node.componentId)`/`{source:"project", id}`, even when that
-// `componentId`'s own `ComponentMetadata.external` was set - so an external component instance's
-// import line serialized as a broken relative path built from its `.d.ts` sourcePath instead of its
-// real package specifier. `componentRef`/`"element"` references already looked this up correctly
-// (`entry.identity`/`findComponentMetaByIdentity`); a plain nested instance did not.
+// `componentId`'s own `ComponentMetadata.external` was set. `componentRef` references already
+// looked this up correctly (`entry.identity`); a plain nested instance did not.
 function instanceImportKeyAndIdentity(componentId: string, metadata: MetadataDocument): { key: ImportKey, identity: ComponentIdentity } {
     const meta = findComponentMeta(metadata, componentId)
     return meta.external !== undefined
@@ -217,20 +238,8 @@ function collectInstanceComponentIds(node: CompositionInstance, ids: Map<ImportK
     const {key, identity} = instanceImportKeyAndIdentity(node.componentId, metadata)
     ids.set(key, identity)
     for (const propValue of Object.values(node.props)) {
-        switch (propValue.kind) {
-            case "value":
-                collectValueComponentIds(propValue.value, ids, metadata)
-                break
-            case "componentRef":
-                ids.set(identityKey(propValue.value), propValue.value)
-                break
-            case "nodes":
-                for (const item of propValue.value.items) collectSlotItemComponentIds(item, ids, metadata)
-                break
-            case "callback":
-            case "richText":
-                break
-        }
+        if (propValue.kind === "callback") continue
+        collectCompositionValueComponentIds(propValue.value, ids, metadata)
     }
 }
 
@@ -240,10 +249,6 @@ function sanitizeIdentifier(name: string): string {
     return result
 }
 
-// The base local identifier a fresh import binds to, before collision disambiguation: a project
-// component's public name, or - for an external identity - its exportName (falling back to the
-// package's last path segment for a `"default"` export, since "default" itself is a useless local
-// name).
 function baseLocalNameFor(identity: ComponentIdentity, metadata: MetadataDocument): string {
     if (identity.source === "project") return findComponentMeta(metadata, identity.id).name
     if (identity.exportName !== "default") return identity.exportName
@@ -252,16 +257,10 @@ function baseLocalNameFor(identity: ComponentIdentity, metadata: MetadataDocumen
     return lastSegment !== undefined && lastSegment !== "" ? lastSegment : identity.package
 }
 
-// A deterministic, human-readable disambiguator for a collision - the project component's own
-// stable metadata id, or (for an external identity, which has no id of its own) its
-// package+exportName, sanitized the same way a local name is.
 function disambiguatorFor(identity: ComponentIdentity): string {
     return identity.source === "project" ? identity.id : `${identity.package}_${identity.exportName}`
 }
 
-// Builds the import-key -> {identity, meta?, localName} table, deterministically (sorted by key)
-// and collision-free: two distinct components (project or external) that would otherwise sanitize
-// to the same local identifier get their own disambiguator appended.
 function buildImportTable(ids: Map<ImportKey, ComponentIdentity>, metadata: MetadataDocument): Map<ImportKey, ImportEntry> {
     const usedNames = new Set<string>()
     const table = new Map<ImportKey, ImportEntry>()
@@ -279,11 +278,6 @@ function buildImportTable(ids: Map<ImportKey, ComponentIdentity>, metadata: Meta
 
 const validIdentifierPattern = /^[A-Za-z_$][A-Za-z0-9_$]*$/
 
-// A single import-line formatter shared by both project and external components - the same
-// default-vs-named-import logic the v1 exporter already implemented for project components,
-// generalized to also build an external component's import statement from
-// `ExternalComponentIdentity.package`/`subpath`/`exportName`/`isDefault` (docs/slot-contract.md
-// section 9), rather than a separate parallel implementation.
 function formatImportLine(params: { isDefault: boolean, exportedName: string, localName: string, specifier: string }): string {
     const specifierText = JSON.stringify(params.specifier)
     if (params.isDefault) return `import ${params.localName} from ${specifierText}`
@@ -326,19 +320,21 @@ function serializeObjectExpression(value: Record<string, ValueJson>, imports: Ma
     return `{${entries.join(", ")}}`
 }
 
+// A "leaf" ValueJson containing an "element" node is refused upstream by validateComposition
+// (docs/slot-contract-recursive.md section 1.4) - unreachable from any v3-validated document, but
+// kept (not removed) since ValueJson's own type still carries the "element" variant for
+// PropMetadata.defaultValue/exampleValue elsewhere, and serializeValueExpression's switch must stay
+// exhaustive over the whole ValueJson union.
 function serializeElementExpression(element: {path: string, name: string, args: Record<string, ValueJson>}, imports: Map<ImportKey, ImportEntry>, metadata: MetadataDocument): string {
     const meta = findComponentMetaByIdentity(metadata, element.path, element.name)
     const entry = imports.get(projectKey(meta.id))
     if (entry === undefined) throw new Error(`exportToTsx: internal error - missing import table entry for component id "${meta.id}"`)
     const attributes = Object.entries(element.args)
-        .map(([name, argValue]) => serializePropFragment(name, {kind: "value", value: argValue}, undefined, imports, metadata, ""))
+        .map(([name, argValue]) => `${validIdentifierPattern.test(name) ? name : JSON.stringify(name)}={${serializeValueExpression(argValue, imports, metadata)}}`)
         .join(" ")
     return `<${entry.localName}${attributes ? ` ${attributes}` : ""} />`
 }
 
-// Turns a single ValueJson into a bare JS expression's source text (no surrounding `{}`) - used
-// both for a JSX attribute's expression container and for array/object element values. Unchanged
-// from the v1 exporter.
 function serializeValueExpression(value: ValueJson, imports: Map<ImportKey, ImportEntry>, metadata: MetadataDocument): string {
     switch (value.type) {
         case "void":
@@ -370,13 +366,11 @@ function serializeCallbackExpression(name: string, callbacksParamName: string): 
 }
 
 // ---------------------------------------------------------------------------------------------
-// "nodes" slot serialization - mirrors render.ts's renderSlotValue/renderSlotItem exactly,
-// including its precise Fragment-wrapping condition (docs/slot-contract.md section 9).
+// "nodes" slot serialization - mirrors render.ts's renderNodesValue/renderSlotItem exactly,
+// including its precise Fragment-wrapping condition, now resolved at any SlotPath depth
+// (docs/slot-contract-recursive.md section 5).
 // ---------------------------------------------------------------------------------------------
 
-// Bare JS-expression form of one CompositionSlotItem - the form used when a single item is the
-// entire prop value (embedded directly inside the caller's `prop={...}` expression container, no
-// extra wrapping braces).
 function serializeSlotItemAsExpression(item: CompositionSlotItem, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, callbacksParamName: string): string {
     switch (item.kind) {
         case "text":
@@ -388,9 +382,6 @@ function serializeSlotItemAsExpression(item: CompositionSlotItem, metadata: Meta
     }
 }
 
-// JSX-child form of one CompositionSlotItem - used when multiple items sit as siblings inside a
-// `<>...</>` Fragment, matching how the v1 exporter already emitted a text child as an expression
-// container (`{"text"}`), never a bare JSX text node.
 function serializeSlotItemAsChild(item: CompositionSlotItem, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, callbacksParamName: string): string {
     switch (item.kind) {
         case "text":
@@ -402,24 +393,14 @@ function serializeSlotItemAsChild(item: CompositionSlotItem, metadata: MetadataD
     }
 }
 
-// Serializes a "nodes" prop value to a bare JS expression (no surrounding `{}` - the caller wraps
-// it in the attribute's own expression container). Wraps in `<>...</>` when there is more than one
-// item OR the resolved policy's `multiple` key is literally present and `true` - the EXACT same
-// condition render.ts's renderSlotValue checks (`"multiple" in rules.itemRule.slot &&
-// rules.itemRule.slot.multiple === true`), reusing the same `resolvePropSlotRules` helper so this
-// never re-derives or drifts from render.ts's own each()/collection resolution (see validate.ts's
-// module doc comment for exactly how a declared-array prop like SlotCard's `actions` resolves its
-// per-item rule from `[propName, each()]` vs a bare ReactNode prop's rule at `[propName]`).
 function serializeSlotValueExpression(
-    propName: string,
-    componentMeta: ComponentMetadata,
+    rule: ReturnType<typeof resolveSlotPolicy>,
     items: CompositionSlotItem[],
     metadata: MetadataDocument,
     imports: Map<ImportKey, ImportEntry>,
     callbacksParamName: string
 ): string {
-    const rules = resolvePropSlotRules(componentMeta, propName)
-    const multiple = rules.itemRule?.slot !== undefined && "multiple" in rules.itemRule.slot && rules.itemRule.slot.multiple === true
+    const multiple = rule?.slot !== undefined && "multiple" in rule.slot && rule.slot.multiple === true
 
     if (items.length === 1 && !multiple) {
         const only = items[0]
@@ -431,50 +412,13 @@ function serializeSlotValueExpression(
     return `<>${childrenSrc}</>`
 }
 
-// A "nodes" prop reached through a declared TypeScript array (e.g. SlotCard's `actions:
-// ReactNode[]`, resolved via an `each()` path per docs/slot-contract.md section 2) needs a REAL
-// array-literal expression, not a Fragment: `renderComposition`'s own JS assignment doesn't care
-// whether `props.actions` is a `ReactNode[]` or a single `ReactElement` (JS erases the declared
-// type), but the exported TSX is real source text checked against the component's actual
-// `ReactNode[]`-typed prop by a real `tsc` run - a Fragment element structurally fails that check
-// ("missing length/pop/push/... from ReactNode[]"). This is this exporter's own documented,
-// consistent resolution of the same `CompositionSlotItem[]` structural-gap judgment call phase 2
-// already flagged in docs/baseline.md ("Composition runtime v2 (slots)"): each stored `items[i]` is
-// treated as exactly one array entry's entire content (never more than one node per entry, since
-// this document shape has no per-entry sub-list), so every item becomes exactly one array element,
-// in order - `actions={[<Greeter />, "Second action"]}` - regardless of the each()-derived policy's
-// own `multiple`/cardinality fields (those bound what ONE entry may hold, a concern this shape
-// cannot represent beyond one node per entry; they play no role in whether the ARRAY itself is
-// Fragment-wrapped, since a declared array is never JSX-wrapped at all). Renders byte-identically
-// to the Fragment-based form `renderComposition` would produce for the same items, since a
-// `Fragment`'s and a plain array's children flatten to the same sibling output under
-// `renderToStaticMarkup`.
-function serializeSlotArrayExpression(items: CompositionSlotItem[], metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, callbacksParamName: string): string {
-    return `[${items.map(item => serializeSlotItemAsExpression(item, metadata, imports, callbacksParamName)).join(", ")}]`
-}
-
-// A "nodes" prop is reached through a declared array (see serializeSlotArrayExpression above) iff
-// its OWN path (not the each()-derived per-item path) resolves to an ArraySchema - i.e. the raw
-// extracted prop type is `SomeReactNodeDomain[]`, not a bare ReactNode. `PropMetadata.schema` is
-// the portable, JSON-safe `SchemaJson` (`{type: string, ...}`) codegen already produces; no live
-// `Schema` instance/`schemaFromJson` call is needed just to read its top-level `type` tag.
-function isDeclaredArrayProp(componentMeta: ComponentMetadata, propName: string): boolean {
-    return componentMeta.props[propName]?.schema.type === "array"
-}
-
 // ---------------------------------------------------------------------------------------------
 // "richText" serialization - the exact same fixed <strong>/<em>/<p>/<ul>/<ol>/<li> mapping
 // render.ts's renderRichTextTextNode/renderRichTextBlockNode produce, as literal JSX source text.
-// Written directly as source (not via a runtime .map()), so - unlike render.ts, which needs a
-// `key` prop because it builds an actual array of React elements at runtime - no `key` attribute
-// is needed here: each node is its own distinct JSX expression in the generated source, not an
-// array element a React reconciler needs to key.
 // ---------------------------------------------------------------------------------------------
 
 function serializeRichTextTextNode(node: RichTextTextNode): string {
     let content = `{${JSON.stringify(node.text)}}`
-    // Nested in mark order, mirroring render.ts exactly: the innermost wrap is the LAST mark in
-    // node.marks, so marks read left-to-right as "outermost to innermost".
     for (let i = node.marks.length - 1; i >= 0; i--) {
         const mark = node.marks[i]
         if (mark === "bold") content = `<strong>${content}</strong>`
@@ -491,11 +435,6 @@ function serializeRichTextBlockNode(node: RichTextBlockNode): string {
     return `<${tag}>${items}</${tag}>`
 }
 
-// Bare JS expression (no surrounding `{}`), always wrapped in a Fragment - render.ts's
-// renderRichText returns a plain ReactNode[] (never itself Fragment-wrapped) assigned directly as
-// the prop value; a Fragment around the same content renders byte-identically under
-// renderToStaticMarkup (a Fragment contributes no markup of its own), so wrapping uniformly here
-// keeps the source simple without any risk of a rendering divergence.
 function serializeRichTextExpression(value: RichTextValueJson): string {
     const content = value.inline
         ? value.nodes.map(serializeRichTextTextNode).join("")
@@ -504,70 +443,83 @@ function serializeRichTextExpression(value: RichTextValueJson): string {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Recursive CompositionValue serialization, docs/slot-contract-recursive.md section 5's table -
+// the SAME dispatch shape as render.ts's renderCompositionValue, producing source text instead of
+// a live JS value.
+// ---------------------------------------------------------------------------------------------
+
+function serializeCompositionValue(
+    componentMeta: ComponentMetadata,
+    path: SlotPath,
+    value: CompositionValue,
+    metadata: MetadataDocument,
+    imports: Map<ImportKey, ImportEntry>,
+    callbacksParamName: string
+): string {
+    switch (value.kind) {
+        case "leaf":
+            return serializeValueExpression(value.value, imports, metadata)
+        case "componentRef": {
+            const entry = imports.get(identityKey(value.value))
+            if (entry === undefined) throw new Error(`exportToTsx: internal error - missing import table entry for a componentRef value`)
+            return entry.localName
+        }
+        case "richText":
+            return serializeRichTextExpression(value.value)
+        case "nodes": {
+            const rule = resolveSlotPolicy(componentMeta, path)
+            return serializeSlotValueExpression(rule, value.value.items, metadata, imports, callbacksParamName)
+        }
+        case "object": {
+            const entries = Object.entries(value.fields).map(([key, childValue]) => {
+                const keyText = validIdentifierPattern.test(key) ? key : JSON.stringify(key)
+                return `${keyText}: ${serializeCompositionValue(componentMeta, [...path, key], childValue, metadata, imports, callbacksParamName)}`
+            })
+            return `{${entries.join(", ")}}`
+        }
+        case "array": {
+            const elements = value.items.map(item =>
+                serializeCompositionValue(componentMeta, [...path, {kind: "each"}], item.value, metadata, imports, callbacksParamName))
+            return `[${elements.join(", ")}]`
+        }
+        case "variant":
+            return serializeCompositionValue(componentMeta, [...path, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals}], value.value, metadata, imports, callbacksParamName)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Prop-fragment / instance serialization.
 // ---------------------------------------------------------------------------------------------
 
-// Plain JSX attribute names are restricted to JSXIdentifier syntax (letters/digits/"-"/"_", no
-// arbitrary strings) - unlike an object property name, a prop coming from an unusual quoted
-// export/prop name can't always be spelled as `name={...}` directly. Falls back to a spread of a
-// single computed key in that rare case, which is always valid regardless of the prop name's shape.
 const jsxAttributeNamePattern = /^[A-Za-z_][A-Za-z0-9_-]*$/
 
 function serializePropFragment(
     propName: string,
     propValue: CompositionPropValue,
-    componentMeta: ComponentMetadata | undefined,
+    componentMeta: ComponentMetadata,
     imports: Map<ImportKey, ImportEntry>,
     metadata: MetadataDocument,
     callbacksParamName: string
 ): string {
-    let exprText: string
-    switch (propValue.kind) {
-        case "callback":
-            exprText = serializeCallbackExpression(propValue.name, callbacksParamName)
-            break
-        case "componentRef": {
-            const entry = imports.get(identityKey(propValue.value))
-            if (entry === undefined) throw new Error(`exportToTsx: internal error - missing import table entry for a componentRef prop "${propName}"`)
-            // Bare identifier expression - never JSX-wrapped, never called (docs/slot-contract.md
-            // section 9), mirroring render.ts's resolveComponentRef, which passes the raw
-            // constructor itself.
-            exprText = entry.localName
-            break
-        }
-        case "richText":
-            exprText = serializeRichTextExpression(propValue.value)
-            break
-        case "nodes": {
-            if (componentMeta === undefined)
-                throw new Error(`exportToTsx: internal error - a "nodes" prop "${propName}" was serialized with no owning component metadata`)
-            exprText = isDeclaredArrayProp(componentMeta, propName)
-                ? serializeSlotArrayExpression(propValue.value.items, metadata, imports, callbacksParamName)
-                : serializeSlotValueExpression(propName, componentMeta, propValue.value.items, metadata, imports, callbacksParamName)
-            break
-        }
-        case "value":
-            exprText = serializeValueExpression(propValue.value, imports, metadata)
-            break
-    }
+    const exprText = propValue.kind === "callback"
+        ? serializeCallbackExpression(propValue.name, callbacksParamName)
+        : serializeCompositionValue(componentMeta, [propName], propValue.value, metadata, imports, callbacksParamName)
 
     if (!jsxAttributeNamePattern.test(propName))
         return `{...{ ${JSON.stringify(propName)}: ${exprText} }}`
 
-    // A bare JSX string-literal attribute (`name="text"`) only for a plain string "value" prop
+    // A bare JSX string-literal attribute (`name="text"`) only for a plain string "leaf" value
     // containing none of the characters that would need escaping inside a JSX string-literal
-    // attribute - everything else, including every other kind/value shape, uses an expression
-    // container.
-    if (propValue.kind === "value" && propValue.value.type === "string" && /^[^"<>{}\r\n\\]*$/.test(propValue.value.value))
-        return `${propName}="${propValue.value.value}"`
+    // attribute - everything else uses an expression container.
+    if (propValue.kind === "composed" && propValue.value.kind === "leaf" && propValue.value.value.type === "string" && /^[^"<>{}\r\n\\]*$/.test(propValue.value.value.value))
+        return `${propName}="${propValue.value.value.value}"`
 
     return `${propName}={${exprText}}`
 }
 
-// Renders one CompositionInstance as a JSX expression. Always self-closing: v2 has no special
+// Renders one CompositionInstance as a JSX expression. Always self-closing: v3 has no special
 // "children" nesting case (see the module doc comment above) - every prop, including one literally
-// named "children", is emitted as an ordinary attribute via serializePropFragment, so there is
-// never a reason to emit nested `<Tag>...</Tag>` child syntax here.
+// named "children", is emitted as an ordinary attribute via serializePropFragment.
 function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, callbacksParamName: string): string {
     const meta = findComponentMeta(metadata, node.componentId)
     const {key} = instanceImportKeyAndIdentity(node.componentId, metadata)

@@ -82,20 +82,21 @@ test('runtime validates, renders, and round-trips a nested composition document 
     });
 
     // --- Build a composition document: Card, nesting Greeter as a child,
-    // with a callback-reference prop (not a stored function body). v2 shape
-    // (docs/slot-contract.md section 7): instanceId/componentId instead of a
-    // single id, children as a "nodes"-kind prop value instead of a special
-    // sibling field.
+    // with a callback-reference prop (not a stored function body). v3 shape
+    // (docs/slot-contract-recursive.md section 1): every non-callback prop
+    // value is {kind:"composed", value: CompositionValue}, and an ordinary
+    // primitive value is a {kind:"leaf", value: ValueJson} CompositionValue,
+    // not a bare {kind:"value", ...} the way v2 had it.
     const doc = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       root: {
         kind: 'instance',
         instanceId: 'root-card',
         componentId: cardMeta.id,
         props: {
-          title: { kind: 'value', value: { type: 'string', value: 'Greetings' } },
+          title: { kind: 'composed', value: { kind: 'leaf', value: { type: 'string', value: 'Greetings' } } },
           onRender: { kind: 'callback', name: 'onCardRender' },
-          children: { kind: 'nodes', value: { items: [
+          children: { kind: 'composed', value: { kind: 'nodes', value: { items: [
             {
               itemId: 'child-greeter',
               kind: 'instance',
@@ -104,12 +105,12 @@ test('runtime validates, renders, and round-trips a nested composition document 
                 instanceId: 'greeter-1',
                 componentId: greeterMeta.id,
                 props: {
-                  name: { kind: 'value', value: { type: 'string', value: 'Composed Host' } },
-                  times: { kind: 'value', value: { type: 'number', value: 2 } },
+                  name: { kind: 'composed', value: { kind: 'leaf', value: { type: 'string', value: 'Composed Host' } } },
+                  times: { kind: 'composed', value: { kind: 'leaf', value: { type: 'number', value: 2 } } },
                 },
               },
             },
-          ] } },
+          ] } } },
         },
       },
     };
@@ -159,23 +160,23 @@ test('runtime validation reports structured diagnostics instead of throwing for 
     const registry = (await import(pathToFileURL(path.join(fixtureOutDir, 'bundle.js')).href)).components;
     const greeterMeta = metadata.components.find(c => c.name === 'Greeter');
 
-    // Unknown component id. (v2 shape: instanceId/componentId, see
-    // docs/slot-contract.md section 7.)
-    const unknownIdDoc = { schemaVersion: 2, root: { kind: 'instance', instanceId: 'r', componentId: 'does-not-exist', props: {} } };
+    // Unknown component id. (v3 shape: instanceId/componentId, see
+    // docs/slot-contract-recursive.md section 7.)
+    const unknownIdDoc = { schemaVersion: 3, root: { kind: 'instance', instanceId: 'r', componentId: 'does-not-exist', props: {} } };
     const unknownIdResult = validateComposition(unknownIdDoc, metadata, registry);
     assert.equal(unknownIdResult.valid, false);
     assert.ok(unknownIdResult.diagnostics.some(d => d.code === 'unknown-component-id'));
 
     // Missing required prop ("name" on Greeter).
-    const missingPropDoc = { schemaVersion: 2, root: { kind: 'instance', instanceId: 'r', componentId: greeterMeta.id, props: {} } };
+    const missingPropDoc = { schemaVersion: 3, root: { kind: 'instance', instanceId: 'r', componentId: greeterMeta.id, props: {} } };
     const missingPropResult = validateComposition(missingPropDoc, metadata, registry);
     assert.equal(missingPropResult.valid, false);
     assert.ok(missingPropResult.diagnostics.some(d => d.code === 'missing-required-prop' && d.path === 'root.props.name'));
     assert.throws(() => renderComposition(missingPropDoc, metadata, registry), CompositionValidationError);
 
     // Wrong-typed prop value.
-    const badTypeDoc = { schemaVersion: 2, root: { kind: 'instance', instanceId: 'r', componentId: greeterMeta.id, props: {
-      name: { kind: 'value', value: { type: 'number', value: 5 } },
+    const badTypeDoc = { schemaVersion: 3, root: { kind: 'instance', instanceId: 'r', componentId: greeterMeta.id, props: {
+      name: { kind: 'composed', value: { kind: 'leaf', value: { type: 'number', value: 5 } } },
     } } };
     const badTypeResult = validateComposition(badTypeDoc, metadata, registry);
     assert.equal(badTypeResult.valid, false);
@@ -184,8 +185,8 @@ test('runtime validation reports structured diagnostics instead of throwing for 
     // Callback reference to a name absent from the host registry: not a
     // silent no-op, an explicit validation error.
     const cardMeta = metadata.components.find(c => c.name === 'Card');
-    const missingCallbackDoc = { schemaVersion: 2, root: { kind: 'instance', instanceId: 'r', componentId: cardMeta.id, props: {
-      title: { kind: 'value', value: { type: 'string', value: 'X' } },
+    const missingCallbackDoc = { schemaVersion: 3, root: { kind: 'instance', instanceId: 'r', componentId: cardMeta.id, props: {
+      title: { kind: 'composed', value: { kind: 'leaf', value: { type: 'string', value: 'X' } } },
       onRender: { kind: 'callback', name: 'not_registered' },
     } } };
     const missingCallbackResult = validateComposition(missingCallbackDoc, metadata, registry, {});

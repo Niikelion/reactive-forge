@@ -10,6 +10,7 @@ const {
   mergeSlotPolicy, mergeCollection, mergeRule,
   migrateMetadataDocumentV1ToV2,
   resolveSlotPolicy, checkSlotValue,
+  isSlotFree,
 } = require('../packages/schema/src/index.ts');
 registerCommonSchemas();
 
@@ -532,4 +533,64 @@ test('S45: checkSlotValue matches an "instance" candidate against its real exter
     {library: libraryWithVendorButton, currentItemCount: 0, currentNonVoidCount: 0, metadata: vendorMetadataDoc}
   );
   assert.equal(withMetadata.ok, true, 'a real external component instance matches an accepts list containing its own external identity');
+});
+
+// docs/slot-contract-recursive.md section 1.6: isSlotFree(schema) - a pure, recursive property of
+// a Schema alone, used by editor-authoring convention to decide when a document subtree may safely
+// collapse to a single "leaf" CompositionValue.
+
+test('S46: isSlotFree is false for ReactNodeSchema/ComponentTypeSchema and true for every primitive', () => {
+  assert.equal(isSlotFree(ReactNodeSchema.instance), false, 'a bare ReactNode is never slot-free');
+  assert.equal(isSlotFree(new ComponentTypeSchema(new ObjectSchema({}))), false, 'a bare ComponentType is never slot-free');
+  assert.equal(isSlotFree(new StringSchema()), true);
+  assert.equal(isSlotFree(new NumberSchema()), true);
+  assert.equal(isSlotFree(new BooleanSchema()), true);
+  assert.equal(isSlotFree(new BigIntSchema()), true);
+  assert.equal(isSlotFree(new DateSchema()), true);
+  assert.equal(isSlotFree(new NullSchema()), true);
+});
+
+test('S47: isSlotFree recurses through Object/Array/Union, false iff a reachable member is ReactNode/ComponentType domain', () => {
+  const plainObject = new ObjectSchema({
+    title: {schema: new StringSchema(), required: true},
+    count: {schema: new NumberSchema(), required: false},
+  });
+  assert.equal(isSlotFree(plainObject), true, 'a plain object with only primitive fields is slot-free');
+
+  const objectWithReactNodeField = new ObjectSchema({
+    title: {schema: new StringSchema(), required: true},
+    body: {schema: ReactNodeSchema.instance, required: true},
+  });
+  assert.equal(isSlotFree(objectWithReactNodeField), false, 'a ReactNode field anywhere inside disqualifies the whole object');
+
+  const nestedObjectWithReactNode = new ObjectSchema({
+    content: {
+      schema: new ObjectSchema({
+        header: {
+          schema: new ObjectSchema({title: {schema: ReactNodeSchema.instance, required: true}}),
+          required: true,
+        },
+      }),
+      required: true,
+    },
+  });
+  assert.equal(isSlotFree(nestedObjectWithReactNode), false, 'a ReactNode nested arbitrarily deep still disqualifies the subtree (content.header.title)');
+
+  const plainArray = new ArraySchema([], new StringSchema());
+  assert.equal(isSlotFree(plainArray), true, 'a plain string[] is slot-free');
+
+  const arrayOfObjectsWithReactNodeField = new ArraySchema([], new ObjectSchema({
+    heading: {schema: new StringSchema(), required: true},
+    body: {schema: ReactNodeSchema.instance, required: true},
+  }));
+  assert.equal(isSlotFree(arrayOfObjectsWithReactNodeField), false, 'sections.each().body-shaped: a ReactNode element field disqualifies the array');
+
+  const plainUnion = new UnionSchema([new StringSchema(), new NumberSchema()]);
+  assert.equal(isSlotFree(plainUnion), true, 'a union of only primitive members is slot-free');
+
+  const unionWithComponentTypeMember = new UnionSchema([
+    new StringSchema(),
+    new ComponentTypeSchema(new ObjectSchema({})),
+  ]);
+  assert.equal(isSlotFree(unionWithComponentTypeMember), false, 'a ComponentType member anywhere in a union disqualifies the whole union');
 });

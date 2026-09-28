@@ -1,25 +1,42 @@
 import {
+    ArraySchema,
     checkSlotValue,
+    ComponentIdentity,
     ComponentLibraryData,
     ComponentMetadata,
+    EffectiveSlotRule,
     findComponentEntry,
     fromValueJson,
+    isPathResolutionDiagnostic,
     MetadataDocument,
+    ObjectSchema,
     registerCommonSchemas,
+    resolveSegment,
     resolveSlotPolicy,
+    RichTextValueJson,
+    Schema,
     schemaFromJson,
     SlotCheckContext,
-    SlotItemCandidate
+    SlotItemCandidate,
+    SlotPath,
+    stripNullish,
+    UnionSchema,
+    ValueJson
 } from "@reactive-forge/schema"
 import {
+    CompositionArrayItem,
     CompositionDocument,
     CompositionDocumentV1,
+    CompositionDocumentV2,
     CompositionInstance,
     CompositionInstanceV1,
+    CompositionInstanceV2,
     CompositionNodeV1,
     CompositionPropValue,
+    CompositionPropValueV2,
     CompositionSlotItem,
-    CompositionSlotValue
+    CompositionSlotItemV2,
+    CompositionValue
 } from "./composition.js"
 import type {CallbackRegistry} from "./render.js"
 
@@ -60,23 +77,16 @@ function isFunctionLike(schema: {type: string, types?: {type: string}[]}): boole
 }
 
 // ---------------------------------------------------------------------------------------------
-// Shared slot-rule resolution for a single prop path, used by both validation (below) and
-// rendering (render.ts, for the Fragment-wrapping rule). docs/slot-contract.md section 2's
-// each()-through-a-declared-array case and section 7's bare-ReactNode case both address the SAME
-// stored `CompositionSlotValue.items` array (this package's composition model does not carry a
-// separate "one items array per array-entry" nesting - see the doc comment on
-// `resolvePropSlotRules` in validate.ts's own module comment above for the judgment call this
-// implements). For a prop whose target schema is a declared array of ReactNode (Card's `actions`
-// being the contract's own worked example), the per-item acceptance rule lives at
-// `[propName, each()]`, while the array's own length bound (`collection`) lives at `[propName]`.
-// For a bare ReactNode prop (no declared array, e.g. `header`), there is no `each()` step at all -
-// the same rule at `[propName]` governs both the item's acceptance and (via its own
-// multiple/minItems/maxItems fields) the slot's cardinality.
-//
-// Algorithm: try `resolveSlotPolicy(meta, [propName, {kind:"each"}])` first; if it returns a rule
-// with a `slot` populated, that is the per-item rule, and `resolveSlotPolicy(meta, [propName])`'s
-// `collection` (if any) bounds `items.length`. Otherwise, `resolveSlotPolicy(meta, [propName])`
-// itself is the per-item rule and there is no separate collection bound.
+// Shared slot-rule resolution for a single TOP-LEVEL prop path, docs/slot-contract.md section 2's
+// each()-through-a-declared-array case and section 7's bare-ReactNode case. Kept for
+// `packages/editor` callers (`packages/editor/src/slots.ts` imports this directly, and is not
+// itself migrated to the v3 recursive shape by this package - docs/slot-contract-recursive.md's
+// assignment scopes that to a later worker). v3's own recursive traversal (`validateCompositionValue`
+// below) does NOT use this helper - a nested/array-entry "nodes" position resolves its own rule
+// directly via `resolveSlotPolicy(componentMeta, path)` at its own exact path, and the "array"
+// CompositionValue case (below) resolves its own `collection` bound the same direct way - so the
+// old perEntry/collection-splitting distinction this helper existed for is now simply "what
+// resolveSlotPolicy returns at two different paths," handled inline by the recursive walker.
 // ---------------------------------------------------------------------------------------------
 export interface PropSlotRules {
     /** The rule checked against each stored `CompositionSlotItem`/`RichTextValueJson`/`ComponentIdentity`. */
@@ -86,13 +96,7 @@ export interface PropSlotRules {
     /**
      * `true` when `itemRule` came from an `each()` path (a declared-array prop, e.g.
      * `["actions", each()]`) - meaning each stored `items[i]` is its OWN independent entry, each
-     * with its own private cardinality budget (`items[i]` is entry `i`'s entire rendered content,
-     * checked in isolation), not a shared multi-item slot. `false` for a bare ReactNode/richText/
-     * componentRef path (e.g. `["header"]`), where every item in `items` competes for one shared
-     * cardinality budget. This distinction matters for `checkSlotValue`'s `SlotCheckContext`
-     * counts: a shared slot's items are checked cumulatively (item N sees N-1 prior siblings), an
-     * each()-entry's single item is always checked alone (0 prior siblings - the entry has no
-     * "siblings" of its own, only the array itself, bounded separately by `collection`).
+     * with its own private cardinality budget.
      */
     perEntry: boolean
 }
@@ -109,8 +113,7 @@ export function resolvePropSlotRules(meta: ComponentMetadata, propName: string):
 // Effective minItems for a policy, mirroring docs/slot-contract.md section 3's cardinality
 // formulas (the schema package's own equivalent, `resolveCardinality` in SlotCheck.ts, is a
 // private, unexported helper - this is a small, deliberate local reimplementation of just the
-// `minItems` half, which `checkSlotValue` itself never enforces per-item; see the doc comment on
-// `validateSlotValue` below for why the caller has to do this part).
+// `minItems` half, which `checkSlotValue` itself never enforces per-item).
 function effectiveMinItems(policy: {kind: string, minItems?: number}): number {
     return policy.minItems ?? 0
 }
@@ -119,55 +122,190 @@ function toSlotCheckCandidate(item: CompositionSlotItem): SlotItemCandidate {
     return item
 }
 
-function validateSlotValue(
-    propName: string,
-    slotValue: CompositionSlotValue,
-    rules: PropSlotRules,
-    path: string,
+// ---------------------------------------------------------------------------------------------
+// docs/slot-contract-recursive.md section 1.4 / 2.2: a "leaf" CompositionValue's own doc-comment
+// claim ("nothing inside this ValueJson is slot-domain") is validated exactly by banning a legacy
+// `"element"` node from appearing anywhere inside it, at any depth.
+// ---------------------------------------------------------------------------------------------
+function containsLegacyElement(value: ValueJson): boolean {
+    switch (value.type) {
+        case "element":
+            return true
+        case "array":
+            return value.value.some(containsLegacyElement)
+        case "object":
+            return Object.values(value.value).some(containsLegacyElement)
+        default:
+            return false
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// "nodes" value validation, docs/slot-contract-recursive.md section 2.2's second bullet - the
+// generalization of v2's `validateSlotValue`'s shared-slot (non-perEntry) branch. Every `"nodes"`
+// CompositionValue, wherever it sits in the tree (a top-level prop, an object field, or a
+// `"nodes"`-kind array entry), owns its OWN independent `CompositionSlotItem[]` cardinality budget
+// - the perEntry/collection split v2 needed is no longer a separate code path here, because an
+// array entry's own cardinality is simply this same function called on that entry's own `items`,
+// and the ARRAY's own collection bound is checked once, separately, by the `"array"` case below.
+// ---------------------------------------------------------------------------------------------
+function validateNodesValue(
+    rule: EffectiveSlotRule | undefined,
+    items: CompositionSlotItem[],
     metadata: MetadataDocument,
     library: ComponentLibraryData,
     callbacks: CallbackRegistry | undefined,
+    diagnosticPath: string,
     diagnostics: CompositionDiagnostic[]
 ): void {
-    const {itemRule, collection, perEntry} = rules
-
-    if (collection !== undefined) {
-        if (collection.maxItems !== undefined && slotValue.items.length > collection.maxItems)
-            diagnostics.push({severity: "error", code: "collection-max-items-exceeded", message: `"${propName}" holds ${String(slotValue.items.length)} entries; collection maxItems is ${String(collection.maxItems)}`, path})
-        if (collection.minItems !== undefined && slotValue.items.length < collection.minItems)
-            diagnostics.push({severity: "error", code: "collection-min-items-not-met", message: `"${propName}" holds ${String(slotValue.items.length)} entries; collection minItems is ${String(collection.minItems)}`, path})
-    }
-
     let nonVoidCount = 0
-    slotValue.items.forEach((item, index) => {
-        const itemPath = `${path}.items[${String(index)}]`
-        // perEntry: each item is its own independent entry (0 prior siblings, always). Shared
-        // slot: items compete cumulatively for one budget (item N sees N prior siblings).
-        const context: SlotCheckContext = perEntry
-            ? {library, currentItemCount: 0, currentNonVoidCount: 0, metadata}
-            : {library, currentItemCount: index, currentNonVoidCount: nonVoidCount, metadata}
-        const result = checkSlotValue(itemRule, toSlotCheckCandidate(item), context)
+    items.forEach((item, index) => {
+        const itemPath = `${diagnosticPath}.items[${String(index)}]`
+        const context: SlotCheckContext = {library, currentItemCount: index, currentNonVoidCount: nonVoidCount, metadata}
+        const result = checkSlotValue(rule, toSlotCheckCandidate(item), context)
         if (!result.ok) {
             for (const d of result.diagnostics)
                 diagnostics.push({severity: d.severity, code: d.code, message: d.message, path: itemPath})
-        }
-        if (perEntry && itemRule?.slot !== undefined) {
-            const minItems = effectiveMinItems(itemRule.slot)
-            if (minItems > 0 && item.kind === "void")
-                diagnostics.push({severity: "error", code: "slot-min-items-not-met", message: `Entry ${String(index)} of "${propName}" is void; this entry's minItems is ${String(minItems)}`, path: itemPath})
         }
         if (item.kind !== "void") nonVoidCount++
         if (item.kind === "instance")
             validateInstance(item.instance, `${itemPath}.instance`, metadata, library, callbacks, diagnostics)
     })
 
-    if (!perEntry && itemRule?.slot !== undefined) {
-        const minItems = effectiveMinItems(itemRule.slot)
+    if (rule?.slot !== undefined) {
+        const minItems = effectiveMinItems(rule.slot)
         if (minItems > 0 && nonVoidCount < minItems)
-            diagnostics.push({severity: "error", code: "slot-min-items-not-met", message: `"${propName}" holds ${String(nonVoidCount)} non-void item(s); minItems is ${String(minItems)}`, path})
+            diagnostics.push({severity: "error", code: "slot-min-items-not-met", message: `Holds ${String(nonVoidCount)} non-void item(s); minItems is ${String(minItems)}`, path: diagnosticPath})
     }
 }
 
+/**
+ * The recursive traversal, docs/slot-contract-recursive.md section 2.2, verbatim. Dispatches on
+ * `value.kind`; `schema` is threaded incrementally (resolved once per level via `resolveSegment`,
+ * never re-derived from the root at every node - section 2.1's cost bound).
+ */
+function validateCompositionValue(
+    componentMeta: ComponentMetadata,
+    path: SlotPath,
+    schema: Schema,
+    value: CompositionValue,
+    metadata: MetadataDocument,
+    library: ComponentLibraryData,
+    callbacks: CallbackRegistry | undefined,
+    diagnosticPath: string,
+    diagnostics: CompositionDiagnostic[]
+): void {
+    switch (value.kind) {
+        case "leaf": {
+            const rule = resolveSlotPolicy(componentMeta, path)
+            if (rule?.slot !== undefined) {
+                diagnostics.push({severity: "error", code: "slot-domain-path-not-composed", message: `A "leaf" value cannot sit at a slot-domain path (this path resolves to a "${rule.slot.kind}" policy)`, path: diagnosticPath})
+                return
+            }
+            if (containsLegacyElement(value.value)) {
+                diagnostics.push({severity: "error", code: "legacy-element-value-forbidden", message: `A "leaf" value may not contain a legacy "element" node at any depth (docs/slot-contract-recursive.md section 1.4)`, path: diagnosticPath})
+                return
+            }
+            try {
+                fromValueJson(stripNullish(schema), value.value)
+            } catch (error) {
+                diagnostics.push({severity: "error", code: "invalid-prop-value", message: error instanceof Error ? error.message : String(error), path: diagnosticPath})
+            }
+            return
+        }
+        case "nodes":
+        case "richText":
+        case "componentRef": {
+            const rule = resolveSlotPolicy(componentMeta, path)
+            if (rule?.slot === undefined) {
+                diagnostics.push({severity: "error", code: "unexpected-slot-value", message: `A "${value.kind}" value sits at a path that is not slot-domain`, path: diagnosticPath})
+                return
+            }
+            if (value.kind === "nodes") {
+                validateNodesValue(rule, value.value.items, metadata, library, callbacks, diagnosticPath, diagnostics)
+                return
+            }
+            const candidate: RichTextValueJson | ComponentIdentity = value.value
+            const result = checkSlotValue(rule, candidate, {library, currentItemCount: 0, currentNonVoidCount: 0, metadata})
+            if (!result.ok)
+                for (const d of result.diagnostics) diagnostics.push({severity: d.severity, code: d.code, message: d.message, path: diagnosticPath})
+            return
+        }
+        case "object": {
+            const stripped = stripNullish(schema)
+            if (!(stripped instanceof ObjectSchema)) {
+                diagnostics.push({severity: "error", code: "value-shape-mismatch", message: `Expected an object-shaped value at this path; the resolved schema is "${stripped.name}"`, path: diagnosticPath})
+                return
+            }
+            for (const [key, childValue] of Object.entries(value.fields)) {
+                const childSchema = resolveSegment(stripped, key)
+                if (isPathResolutionDiagnostic(childSchema)) {
+                    diagnostics.push({severity: "error", code: childSchema.code, message: childSchema.message, path: `${diagnosticPath}.${key}`})
+                    continue
+                }
+                validateCompositionValue(componentMeta, [...path, key], childSchema, childValue, metadata, library, callbacks, `${diagnosticPath}.${key}`, diagnostics)
+            }
+            for (const [key, propSchema] of Object.entries(stripped.properties)) {
+                if (key in value.fields) continue
+                if (!propSchema.required) continue
+                const childPath = [...path, key]
+                const rule = resolveSlotPolicy(componentMeta, childPath)
+                if (rule?.slot !== undefined) {
+                    const minItems = effectiveMinItems(rule.slot)
+                    if (minItems > 0)
+                        diagnostics.push({severity: "error", code: "slot-min-items-not-met", message: `Field "${key}" is missing but this slot's minItems is ${String(minItems)}`, path: `${diagnosticPath}.${key}`})
+                } else {
+                    diagnostics.push({severity: "error", code: "missing-required-prop", message: `Required field "${key}" is missing`, path: `${diagnosticPath}.${key}`})
+                }
+            }
+            return
+        }
+        case "array": {
+            const stripped = stripNullish(schema)
+            if (!(stripped instanceof ArraySchema)) {
+                diagnostics.push({severity: "error", code: "value-shape-mismatch", message: `Expected an array-shaped value at this path; the resolved schema is "${stripped.name}"`, path: diagnosticPath})
+                return
+            }
+            const collection = resolveSlotPolicy(componentMeta, path)?.collection
+            if (collection?.maxItems !== undefined && value.items.length > collection.maxItems)
+                diagnostics.push({severity: "error", code: "collection-max-items-exceeded", message: `Array holds ${String(value.items.length)} entries; collection maxItems is ${String(collection.maxItems)}`, path: diagnosticPath})
+            if (collection?.minItems !== undefined && value.items.length < collection.minItems)
+                diagnostics.push({severity: "error", code: "collection-min-items-not-met", message: `Array holds ${String(value.items.length)} entries; collection minItems is ${String(collection.minItems)}`, path: diagnosticPath})
+
+            const elementSchema = resolveSegment(stripped, {kind: "each"})
+            if (isPathResolutionDiagnostic(elementSchema)) {
+                diagnostics.push({severity: "error", code: elementSchema.code, message: elementSchema.message, path: diagnosticPath})
+                return
+            }
+            value.items.forEach((item, index) => {
+                validateCompositionValue(componentMeta, [...path, {kind: "each"}], elementSchema, item.value, metadata, library, callbacks, `${diagnosticPath}.items[${String(index)}]`, diagnostics)
+            })
+            return
+        }
+        case "variant": {
+            const stripped = stripNullish(schema)
+            if (!(stripped instanceof UnionSchema)) {
+                diagnostics.push({severity: "error", code: "value-shape-mismatch", message: `Expected a union-shaped value at this path; the resolved schema is "${stripped.name}"`, path: diagnosticPath})
+                return
+            }
+            const memberSchema = resolveSegment(stripped, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals})
+            if (isPathResolutionDiagnostic(memberSchema)) {
+                diagnostics.push({severity: "error", code: memberSchema.code, message: memberSchema.message, path: diagnosticPath})
+                return
+            }
+            validateCompositionValue(componentMeta, [...path, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals}], memberSchema, value.value, metadata, library, callbacks, diagnosticPath, diagnostics)
+            return
+        }
+    }
+}
+
+/**
+ * v3 entry point, docs/slot-contract-recursive.md section 2.3: for each declared prop,
+ * `provided.kind === "callback"` is unchanged (today's callback-name-resolution check);
+ * `provided.kind === "composed"` calls `validateCompositionValue` at `[propName]`. Everything
+ * above this (is the prop declared at all, is a required prop present, the unknown-prop warning
+ * loop) is unchanged from v2.
+ */
 function validateInstance(
     node: CompositionInstance,
     path: string,
@@ -189,52 +327,19 @@ function validateInstance(
 
     for (const [propName, propMeta] of Object.entries(componentMeta.props)) {
         const provided = node.props[propName]
-        const rules = resolvePropSlotRules(componentMeta, propName)
-        const isSlotDomain = rules.itemRule !== undefined
-
-        if (provided === undefined) {
-            if (propMeta.required)
-                diagnostics.push({severity: "error", code: "missing-required-prop", message: `Required prop "${propName}" is missing`, path: `${path}.props.${propName}`})
-            else if (isSlotDomain && rules.itemRule?.slot !== undefined && effectiveMinItems(rules.itemRule.slot) > 0)
-                diagnostics.push({severity: "error", code: "slot-min-items-not-met", message: `"${propName}" is missing but this slot's minItems is ${String(effectiveMinItems(rules.itemRule.slot))}`, path: `${path}.props.${propName}`})
-            continue
-        }
-
         const propPath = `${path}.props.${propName}`
 
-        if (provided.kind === "nodes") {
-            if (!isSlotDomain) {
-                diagnostics.push({severity: "error", code: "unexpected-slot-value", message: `Prop "${propName}" is not a ReactNode-domain slot`, path: propPath})
-                continue
+        if (provided === undefined) {
+            if (propMeta.required) {
+                diagnostics.push({severity: "error", code: "missing-required-prop", message: `Required prop "${propName}" is missing`, path: propPath})
+            } else {
+                const rule = resolveSlotPolicy(componentMeta, [propName])
+                if (rule?.slot !== undefined) {
+                    const minItems = effectiveMinItems(rule.slot)
+                    if (minItems > 0)
+                        diagnostics.push({severity: "error", code: "slot-min-items-not-met", message: `"${propName}" is missing but this slot's minItems is ${String(minItems)}`, path: propPath})
+                }
             }
-            validateSlotValue(propName, provided.value, rules, propPath, metadata, library, callbacks, diagnostics)
-            continue
-        }
-
-        if (provided.kind === "richText") {
-            if (rules.itemRule?.slot?.kind !== "richText") {
-                diagnostics.push({severity: "error", code: "policy-type-mismatch", message: `Prop "${propName}" does not resolve to a richText policy`, path: propPath})
-                continue
-            }
-            const result = checkSlotValue(rules.itemRule, provided.value, {library, currentItemCount: 0, currentNonVoidCount: 0})
-            if (!result.ok)
-                for (const d of result.diagnostics) diagnostics.push({severity: d.severity, code: d.code, message: d.message, path: propPath})
-            continue
-        }
-
-        if (provided.kind === "componentRef") {
-            if (rules.itemRule?.slot?.kind !== "componentRef") {
-                diagnostics.push({severity: "error", code: "policy-type-mismatch", message: `Prop "${propName}" does not resolve to a componentRef policy`, path: propPath})
-                continue
-            }
-            const result = checkSlotValue(rules.itemRule, provided.value, {library, currentItemCount: 0, currentNonVoidCount: 0})
-            if (!result.ok)
-                for (const d of result.diagnostics) diagnostics.push({severity: d.severity, code: d.code, message: d.message, path: propPath})
-            continue
-        }
-
-        if (isSlotDomain) {
-            diagnostics.push({severity: "error", code: "unexpected-value-kind", message: `Prop "${propName}" is a slot; expected a "nodes"/"richText"/"componentRef" value`, path: propPath})
             continue
         }
 
@@ -243,19 +348,14 @@ function validateInstance(
                 diagnostics.push({severity: "error", code: "callback-for-non-function-prop", message: `Prop "${propName}" is not function-typed and cannot take a callback reference`, path: propPath})
                 continue
             }
-            if (callbacks !== undefined && !(provided.name in callbacks)) {
+            if (callbacks !== undefined && !(provided.name in callbacks))
                 diagnostics.push({severity: "error", code: "unresolved-callback", message: `Callback reference "${provided.name}" for prop "${propName}" is not present in the host callback registry`, path: propPath})
-            }
             continue
         }
 
-        // provided.kind === "value"
-        try {
-            const schema = schemaFromJson(propMeta.schema)
-            fromValueJson(schema, provided.value)
-        } catch (error) {
-            diagnostics.push({severity: "error", code: "invalid-prop-value", message: `Prop "${propName}": ${error instanceof Error ? error.message : String(error)}`, path: propPath})
-        }
+        // provided.kind === "composed"
+        const schema = schemaFromJson(propMeta.schema)
+        validateCompositionValue(componentMeta, [propName], schema, provided.value, metadata, library, callbacks, propPath, diagnostics)
     }
 
     for (const propName of Object.keys(node.props)) {
@@ -265,28 +365,17 @@ function validateInstance(
 }
 
 /**
- * Validates a v2 composition document against a `MetadataDocument` (for prop schemas/slot
- * policies/requiredness) and a `ComponentLibraryData` (for actual component registration). Checks,
- * recursively over the whole tree:
+ * Validates a v3 composition document against a `MetadataDocument` (for prop schemas/slot
+ * policies/requiredness) and a `ComponentLibraryData` (for actual component registration).
  *
- * - `doc.schemaVersion` is exactly `2` - a `1` (or any other) document is refused outright with
- *   diagnostic `"unsupported-schema-version"` naming `migrateCompositionDocumentV1ToV2` (for `1`)
- *   as the required step, per docs/slot-contract.md section 10. This function never branches on
- *   `schemaVersion === 1` to reinterpret the old sibling-`children` structure.
- * - every referenced component id exists in both the metadata document and the registry;
- * - every ordinary (`"value"`/`"callback"`) prop value is assignable/resolvable exactly as v1
- *   checked it;
- * - every `"nodes"`/`"richText"`/`"componentRef"` prop value is checked through the SAME
- *   `resolveSlotPolicy`/`checkSlotValue` pair the editor's palette/drop-acceptance code will use in
- *   phase 3 (docs/slot-contract.md section 8) - not a parallel ad-hoc check. See
- *   `resolvePropSlotRules` above for exactly how a prop's path is built for that lookup.
- * - every required prop (including a required-by-`minItems` slot) is present.
- *
- * Never throws; returns a structured result. `renderComposition` in render.ts calls this with the
- * real callback registry and throws `CompositionValidationError` if the result is invalid.
+ * `doc.schemaVersion` must be exactly `3` - a `2` or `1` document is refused outright with
+ * diagnostic `"unsupported-schema-version"` naming the required migration call(s)
+ * (`migrateCompositionDocumentV2ToV3` for `2`, `migrateCompositionDocumentV1ToV2` then
+ * `migrateCompositionDocumentV2ToV3` for `1`), per docs/slot-contract-recursive.md section 7.2. This
+ * function never branches on `schemaVersion === 1 | 2` to reinterpret the old shapes.
  */
 export function validateComposition(
-    doc: CompositionDocument | CompositionDocumentV1,
+    doc: CompositionDocument | CompositionDocumentV2 | CompositionDocumentV1,
     metadata: MetadataDocument,
     library: ComponentLibraryData,
     callbacks?: CallbackRegistry
@@ -294,10 +383,14 @@ export function validateComposition(
     const diagnostics: CompositionDiagnostic[] = []
     const schemaVersion: number = doc.schemaVersion
     if (schemaVersion === 1) {
-        diagnostics.push({severity: "error", code: "unsupported-schema-version", message: `Composition schemaVersion 1 is not accepted by v2 APIs; call migrateCompositionDocumentV1ToV2(doc) first`, path: "root"})
+        diagnostics.push({severity: "error", code: "unsupported-schema-version", message: `Composition schemaVersion 1 is not accepted by v3 APIs; call migrateCompositionDocumentV1ToV2(doc) then migrateCompositionDocumentV2ToV3(doc, metadata) first`, path: "root"})
         return {valid: false, diagnostics}
     }
-    if (schemaVersion !== 2) {
+    if (schemaVersion === 2) {
+        diagnostics.push({severity: "error", code: "unsupported-schema-version", message: `Composition schemaVersion 2 is not accepted by v3 APIs; call migrateCompositionDocumentV2ToV3(doc, metadata) first`, path: "root"})
+        return {valid: false, diagnostics}
+    }
+    if (schemaVersion !== 3) {
         diagnostics.push({severity: "error", code: "unsupported-schema-version", message: `Unsupported composition schemaVersion: ${String(schemaVersion)}`, path: "root"})
         return {valid: false, diagnostics}
     }
@@ -306,10 +399,9 @@ export function validateComposition(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Migration, docs/slot-contract.md section 10 ("Composition document: v1 -> v2 requires an
-// explicit migration call"). Deterministic, reproducible, idempotent id synthesis from each v1
-// node's structural position (the same childIndexPath packages/editor/src/preview.ts's
-// `CompositionPath` already used: `[]` = root, `[0]` = root's first child, etc).
+// Migration, v1 -> v2 (docs/slot-contract.md section 10). Unchanged from phase 2 other than the
+// V2-suffixed type names its output/recursion now use (composition.ts's names were repurposed to
+// mean v3 - see that file's versioning comment).
 // ---------------------------------------------------------------------------------------------
 
 // Small, dependency-free FNV-1a 32-bit hash, hex-encoded - reimplemented locally rather than
@@ -332,24 +424,23 @@ function migratedInstanceId(childIndexPath: number[]): string {
 
 // itemId is a distinct id from the instance's own instanceId (an "instance"-kind slot item wraps
 // an instance that already has its own instanceId) - salted with a literal tag so the two never
-// collide for the same structural position. Not specified verbatim by the contract (which only
-// gives the instanceId formula); a documented, deterministic, reproducible judgment call.
+// collide for the same structural position.
 function migratedItemId(childIndexPath: number[]): string {
     return shortHash(`migrated-item\0${childIndexPath.join(".")}`)
 }
 
-function migrateNodeToSlotItem(node: CompositionNodeV1, childIndexPath: number[]): CompositionSlotItem {
+function migrateNodeToSlotItem(node: CompositionNodeV1, childIndexPath: number[]): CompositionSlotItemV2 {
     const itemId = migratedItemId(childIndexPath)
     if (node.kind === "text") return {itemId, kind: "text", value: node.value}
     if (node.kind === "void") return {itemId, kind: "void"}
-    return {itemId, kind: "instance", instance: migrateInstance(node, childIndexPath)}
+    return {itemId, kind: "instance", instance: migrateInstanceV1ToV2(node, childIndexPath)}
 }
 
-function migrateInstance(node: CompositionInstanceV1, childIndexPath: number[]): CompositionInstance {
-    const props: Record<string, CompositionPropValue> = {}
+function migrateInstanceV1ToV2(node: CompositionInstanceV1, childIndexPath: number[]): CompositionInstanceV2 {
+    const props: Record<string, CompositionPropValueV2> = {}
     for (const [propName, propValue] of Object.entries(node.props)) {
         // Every existing {kind:"value"}/{kind:"callback"} prop value passes through unchanged -
-        // both kinds are still valid CompositionPropValue variants in v2 (section 10).
+        // both kinds are still valid CompositionPropValueV2 variants in v2.
         props[propName] = propValue
     }
     if (node.children !== undefined && node.children.length > 0) {
@@ -367,20 +458,248 @@ function migrateInstance(node: CompositionInstanceV1, childIndexPath: number[]):
 }
 
 /**
- * v1 -> v2 composition document upgrade, docs/slot-contract.md section 10, implemented verbatim:
- *
- * - assigns `instanceId`/`itemId` deterministically from each node's v1 structural position
- *   (`instanceId = shortHash("migrated\0" + childIndexPath.join("."))`);
- * - rewrites `id` -> `componentId` on every instance;
- * - converts the old sibling `children?: CompositionNodeV1[]` into
- *   `props["children"] = {kind: "nodes", value: {items: children.map(toSlotItem)}}`;
- * - every existing `{kind:"value"}`/`{kind:"callback"}` prop value passes through unchanged.
- *
- * Deterministic and reproducible: the same v1 document always migrates to the same v2 ids, and
- * re-running migration on an already-migrated-then-reloaded v1 document (impossible in practice
- * since a migrated document is `schemaVersion: 2`, but structurally) would produce the same ids
- * again. This is a one-time synthesis only - v2 documents never recompute ids from position again.
+ * v1 -> v2 composition document upgrade, docs/slot-contract.md section 10, implemented verbatim
+ * (unchanged from phase 2, other than the output type now being explicitly `CompositionDocumentV2`).
  */
-export function migrateCompositionDocumentV1ToV2(doc: CompositionDocumentV1): CompositionDocument {
-    return {schemaVersion: 2, root: migrateInstance(doc.root, [])}
+export function migrateCompositionDocumentV1ToV2(doc: CompositionDocumentV1): CompositionDocumentV2 {
+    return {schemaVersion: 2, root: migrateInstanceV1ToV2(doc.root, [])}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Migration, v2 -> v3 (docs/slot-contract-recursive.md section 7.3) - metadata-dependent, unlike
+// every prior migration in this system's history (see that section's own extensive rationale).
+// ---------------------------------------------------------------------------------------------
+
+export interface MigrationDiagnostic {
+    severity: "error" | "warning"
+    code: string
+    message: string
+    path: string
+}
+
+export interface MigrationResult {
+    document: CompositionDocument
+    diagnostics: MigrationDiagnostic[]
+}
+
+// Fresh, opaque, collision-resistant id generation for content migration synthesizes (a nested
+// "element" reference becoming a real instance/slot item has no prior stored id to reuse).
+// `crypto.randomUUID` when available (every real browser and Node >= 14.17), a small counter-based
+// fallback otherwise - mirrors `packages/editor/src/slots.ts`'s `generateId`, reimplemented locally
+// since `packages/runtime` must not depend on `packages/editor` (the dependency runs the other way).
+let migrationIdCounter = 0
+function freshId(prefix: string): string {
+    const cryptoObj = (globalThis as {crypto?: {randomUUID?: () => string}}).crypto
+    if (cryptoObj?.randomUUID) return `${prefix}-${cryptoObj.randomUUID()}`
+    migrationIdCounter += 1
+    return `${prefix}-${Date.now().toString(36)}-${migrationIdCounter.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+// Mirrors packages/editor/src/slots.ts's `plainRichText` exactly (a single unmarked text run) -
+// reimplemented locally for the same layering reason as `freshId` above.
+function plainRichText(text: string, inline: boolean): RichTextValueJson {
+    if (inline) return {kind: "richText", version: 1, inline: true, nodes: [{type: "text", text, marks: []}]}
+    return {kind: "richText", version: 1, inline: false, nodes: [{type: "paragraph", children: [{type: "text", text, marks: []}]}]}
+}
+
+function findComponentMetaByIdentity(metadata: MetadataDocument, sourcePath: string, name: string): ComponentMetadata | undefined {
+    return metadata.components.find(component => component.sourcePath === sourcePath && component.name === name)
+}
+
+// Section 7.3's "walk `value`'s shape in lockstep with `resolvePath`... read-only" pre-check: does
+// this ValueJson subtree contain a legacy "element" anywhere, OR does its OWN path, or any reachable
+// sub-path through its object/array structure, resolve to a slot-domain policy under CURRENT
+// metadata? If neither, the whole subtree is the common "lossless leaf wrap" case (7.3 case 1) and
+// needs no further structural decomposition at all.
+function valueSubtreeNeedsDecomposition(value: ValueJson, path: SlotPath, componentMeta: ComponentMetadata): boolean {
+    if (containsLegacyElement(value)) return true
+    if (resolveSlotPolicy(componentMeta, path)?.slot !== undefined) return true
+    if (value.type === "object")
+        return Object.entries(value.value).some(([key, child]) => valueSubtreeNeedsDecomposition(child, [...path, key], componentMeta))
+    if (value.type === "array")
+        return value.value.some(child => valueSubtreeNeedsDecomposition(child, [...path, {kind: "each"}], componentMeta))
+    return false
+}
+
+// Section 7.3 case 2: a plain (non-"element") ValueJson found at a path CURRENT metadata resolves
+// as slot-domain. Mechanically lifts where possible; discards (with a MigrationDiagnostic) where
+// there is no sensible lift. Returns `null` to mean "omit this position entirely" (only meaningful
+// for a componentRef-policy position, which has no "empty" representation of its own).
+function liftPlainValueToSlot(
+    value: ValueJson,
+    path: SlotPath,
+    policy: NonNullable<EffectiveSlotRule["slot"]>,
+    diagnosticPath: string,
+    diagnostics: MigrationDiagnostic[]
+): CompositionValue | null {
+    if (policy.kind === "richText") {
+        if (value.type === "string") return {kind: "richText", value: plainRichText(value.value, policy.inline)}
+        diagnostics.push({severity: "warning", code: "migrated-value-discarded", message: `Non-string value at a richText-policy path was discarded (original: ${JSON.stringify(value)})`, path: diagnosticPath})
+        return {kind: "richText", value: plainRichText("", policy.inline)}
+    }
+    if (policy.kind === "any" || policy.kind === "components") {
+        if (value.type === "string") return {kind: "nodes", value: {items: [{itemId: freshId("item"), kind: "text", value: value.value}]}}
+        diagnostics.push({severity: "warning", code: "migrated-value-discarded", message: `Non-string value at a ReactNode-policy path was discarded (original: ${JSON.stringify(value)})`, path: diagnosticPath})
+        return {kind: "nodes", value: {items: []}}
+    }
+    // policy.kind === "componentRef": no sensible mechanical lift from a plain ValueJson at all.
+    diagnostics.push({severity: "warning", code: "migrated-value-discarded", message: `A plain value at a componentRef-policy path has no mechanical lift and was discarded (original: ${JSON.stringify(value)})`, path: diagnosticPath})
+    return null
+}
+
+// Section 7.3 case 3: converts one legacy "element" node's args (Record<string, ValueJson>) into a
+// fresh nested instance's own props - "a smaller instance of this exact same conversion," each arg
+// treated exactly like an ordinary top-level prop value on the target component.
+function migrateElementArgs(
+    args: Record<string, ValueJson>,
+    targetMeta: ComponentMetadata,
+    metadata: MetadataDocument,
+    diagnosticPath: string,
+    diagnostics: MigrationDiagnostic[]
+): Record<string, CompositionPropValue> {
+    const props: Record<string, CompositionPropValue> = {}
+    for (const [argName, argValue] of Object.entries(args)) {
+        const converted = migrateValueJsonAt(argValue, [argName], targetMeta, metadata, `${diagnosticPath}.args.${argName}`, diagnostics)
+        if (converted !== null) props[argName] = {kind: "composed", value: converted}
+    }
+    return props
+}
+
+/**
+ * The core per-position ValueJson -> CompositionValue conversion, section 7.3's cases 1-3, applied
+ * recursively at whatever depth is actually needed (never eagerly decomposing a subtree that
+ * `valueSubtreeNeedsDecomposition` proves is entirely slot-free and element-free - section 9's
+ * explicit "migration never proactively decomposes" scoping). `path` is the FULL SlotPath from
+ * `componentMeta`'s own props root (mirrors `validateCompositionValue`'s `path` parameter exactly).
+ * Returns `null` to mean "omit this position" (case 2's componentRef sub-case, or an unresolvable
+ * "element" reference - both genuinely have nothing valid to put here).
+ */
+function migrateValueJsonAt(
+    value: ValueJson,
+    path: SlotPath,
+    componentMeta: ComponentMetadata,
+    metadata: MetadataDocument,
+    diagnosticPath: string,
+    diagnostics: MigrationDiagnostic[]
+): CompositionValue | null {
+    if (!valueSubtreeNeedsDecomposition(value, path, componentMeta))
+        return {kind: "leaf", value}
+
+    if (value.type === "element") {
+        const rule = resolveSlotPolicy(componentMeta, path)
+        if (rule?.slot === undefined) {
+            diagnostics.push({severity: "error", code: "legacy-element-at-non-slot-path", message: `A legacy "element" reference at a path with no current slot policy was discarded (target "${value.value.path}#${value.value.name}")`, path: diagnosticPath})
+            return null
+        }
+        const targetMeta = findComponentMetaByIdentity(metadata, value.value.path, value.value.name)
+        if (targetMeta === undefined) {
+            diagnostics.push({severity: "error", code: "legacy-element-at-non-slot-path", message: `A legacy "element" reference could not be resolved against current metadata and was discarded (target "${value.value.path}#${value.value.name}")`, path: diagnosticPath})
+            return null
+        }
+        const instance: CompositionInstance = {
+            kind: "instance",
+            instanceId: freshId("instance"),
+            componentId: targetMeta.id,
+            props: migrateElementArgs(value.value.args, targetMeta, metadata, diagnosticPath, diagnostics)
+        }
+        return {kind: "nodes", value: {items: [{itemId: freshId("item"), kind: "instance", instance}]}}
+    }
+
+    const rule = resolveSlotPolicy(componentMeta, path)
+    if (rule?.slot !== undefined)
+        return liftPlainValueToSlot(value, path, rule.slot, diagnosticPath, diagnostics)
+
+    if (value.type === "object") {
+        const fields: Record<string, CompositionValue> = {}
+        for (const [key, child] of Object.entries(value.value)) {
+            const converted = migrateValueJsonAt(child, [...path, key], componentMeta, metadata, `${diagnosticPath}.${key}`, diagnostics)
+            if (converted !== null) fields[key] = converted
+        }
+        return {kind: "object", fields}
+    }
+
+    if (value.type === "array") {
+        const items: CompositionArrayItem[] = []
+        value.value.forEach((child, index) => {
+            const converted = migrateValueJsonAt(child, [...path, {kind: "each"}], componentMeta, metadata, `${diagnosticPath}[${String(index)}]`, diagnostics)
+            if (converted !== null) items.push({itemId: freshId("item"), value: converted})
+        })
+        return {kind: "array", items}
+    }
+
+    // A primitive with no decomposition need reaching here would already have been caught by the
+    // valueSubtreeNeedsDecomposition(...) === false guard above; kept as a safe, total fallback.
+    return {kind: "leaf", value}
+}
+
+function migrateSlotItemV2ToV3(item: CompositionSlotItemV2, metadata: MetadataDocument, diagnosticPath: string, diagnostics: MigrationDiagnostic[]): CompositionSlotItem {
+    if (item.kind !== "instance") return item
+    return {itemId: item.itemId, kind: "instance", instance: migrateInstanceV2ToV3(item.instance, metadata, `${diagnosticPath}.items`, diagnostics)}
+}
+
+function migratePropValueV2ToV3(
+    propName: string,
+    propValue: CompositionPropValueV2,
+    componentMeta: ComponentMetadata,
+    metadata: MetadataDocument,
+    diagnosticPath: string,
+    diagnostics: MigrationDiagnostic[]
+): CompositionPropValue | null {
+    switch (propValue.kind) {
+        case "callback":
+            return propValue
+        case "componentRef":
+            return {kind: "composed", value: {kind: "componentRef", value: propValue.value}}
+        case "richText":
+            return {kind: "composed", value: {kind: "richText", value: propValue.value}}
+        case "nodes":
+            return {
+                kind: "composed",
+                value: {
+                    kind: "nodes",
+                    value: {items: propValue.value.items.map(item => migrateSlotItemV2ToV3(item, metadata, diagnosticPath, diagnostics))}
+                }
+            }
+        case "value": {
+            const converted = migrateValueJsonAt(propValue.value, [propName], componentMeta, metadata, diagnosticPath, diagnostics)
+            return converted === null ? null : {kind: "composed", value: converted}
+        }
+    }
+}
+
+function migrateInstanceV2ToV3(node: CompositionInstanceV2, metadata: MetadataDocument, diagnosticPath: string, diagnostics: MigrationDiagnostic[]): CompositionInstance {
+    const componentMeta = findMetadata(metadata, node.componentId)
+    const props: Record<string, CompositionPropValue> = {}
+    for (const [propName, propValue] of Object.entries(node.props)) {
+        const propPath = `${diagnosticPath}.props.${propName}`
+        if (componentMeta === undefined) {
+            // Unknown component id under current metadata - nothing to resolve slot policy
+            // against; preserve non-"value" kinds structurally (they carry no ValueJson requiring
+            // policy-aware decisions) and leaf-wrap a plain "value" as-is, diagnosing the gap.
+            diagnostics.push({severity: "warning", code: "migrated-unknown-component", message: `No current metadata for component id "${node.componentId}"; prop "${propName}" migrated structurally without policy awareness`, path: propPath})
+            if (propValue.kind === "callback") props[propName] = propValue
+            else if (propValue.kind === "componentRef") props[propName] = {kind: "composed", value: {kind: "componentRef", value: propValue.value}}
+            else if (propValue.kind === "richText") props[propName] = {kind: "composed", value: {kind: "richText", value: propValue.value}}
+            else if (propValue.kind === "nodes") props[propName] = {kind: "composed", value: {kind: "nodes", value: {items: propValue.value.items.map(item => migrateSlotItemV2ToV3(item, metadata, propPath, diagnostics))}}}
+            else props[propName] = {kind: "composed", value: {kind: "leaf", value: propValue.value}}
+            continue
+        }
+        const converted = migratePropValueV2ToV3(propName, propValue, componentMeta, metadata, propPath, diagnostics)
+        if (converted !== null) props[propName] = converted
+    }
+    return {kind: "instance", instanceId: node.instanceId, componentId: node.componentId, props}
+}
+
+/**
+ * v2 -> v3 composition document upgrade, docs/slot-contract-recursive.md section 7.3. Total (never
+ * throws) - every branch produces a structurally valid v3 value, surfacing anything lossy as a
+ * `MigrationDiagnostic` rather than silently discarding it. `metadata` must be the CURRENT
+ * (post-repair) `MetadataDocument` - this migration is the first moment existing v2 content is
+ * actually checked against policy at all (section 7.3's own rationale for why this is the first
+ * migration in the system that needs more than the source document alone as input).
+ */
+export function migrateCompositionDocumentV2ToV3(doc: CompositionDocumentV2, metadata: MetadataDocument): MigrationResult {
+    const diagnostics: MigrationDiagnostic[] = []
+    const root = migrateInstanceV2ToV3(doc.root, metadata, "root", diagnostics)
+    return {document: {schemaVersion: 3, root}, diagnostics}
 }
