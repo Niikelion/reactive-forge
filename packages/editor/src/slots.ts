@@ -12,8 +12,8 @@ import {
     SlotCheckResult,
     SlotItemCandidate
 } from "@reactive-forge/schema"
-import {CompositionDocument, CompositionInstance, CompositionSlotItem, resolvePropSlotRules} from "@reactive-forge/runtime"
-import {getInstanceAtPath, InstancePath, updateInstanceAtPath} from "./preview.js"
+import {CompositionArrayItem, CompositionDocument, CompositionInstance, CompositionPropValue, CompositionSlotItem, resolvePropSlotRules} from "@reactive-forge/runtime"
+import {getInstanceAtPath, updateInstanceAtPath, ValuePath} from "./preview.js"
 
 // Slot outlets and operations, phase 3 (docs/slot-contract.md section 8: "One shared
 // policy resolver/validator must serve palette filtering, drop acceptance, paste/
@@ -146,6 +146,52 @@ function describeRejection(result: {ok: false, diagnostics: {message: string}[]}
     return result.diagnostics.map(d => d.message).join("; ") || "Rejected by slot policy."
 }
 
+// ---------------------------------------------------------------------------------------------
+// A DECLARED ARRAY prop with an each() per-entry slot policy (e.g. `actions: ReactNode[]`,
+// worked example 8.3) is represented at v3's top level as `{kind:"array", items:
+// CompositionArrayItem[]}`, NOT a flat `"nodes"` value - each declared array entry is
+// independently `{kind:"nodes", value:{items: CompositionSlotItem[]}}`, and (per 8.3) a single
+// entry MAY hold more than one rendered node. This module's simple insert/remove/move CRUD
+// surface only ever operates one `CompositionSlotItem` at a time, so it deliberately keeps to
+// the common "one declared entry = exactly one rendered node" case: each entry's own `itemId`
+// is set equal to its single inner slot item's `itemId` (two independent id concepts per section
+// 4, degenerately equal here - a caller that needs a genuine multi-node entry uses
+// `updateValueAtPath` directly, as tests/editor.test.cjs's nested-addressing tests do). A
+// bare-ReactNode prop (no each() rule - e.g. `header: ReactNode`) stays the flat `"nodes"` shape,
+// exactly as before. Which shape to read is taken from whatever is ALREADY stored (so these
+// functions never need a `MetadataDocument` beyond `insertSlotItem`, which already has one for
+// policy checking); which shape to WRITE for a brand-new/absent prop falls back to
+// `rules.perEntry`.
+// ---------------------------------------------------------------------------------------------
+type SlotShape = "array" | "nodes"
+
+function currentSlotShape(prop: CompositionPropValue | undefined): SlotShape | undefined {
+    if (prop?.kind !== "composed") return undefined
+    if (prop.value.kind === "array") return "array"
+    if (prop.value.kind === "nodes") return "nodes"
+    return undefined
+}
+
+function readSlotEntries(prop: CompositionPropValue | undefined, shape: SlotShape): CompositionSlotItem[] {
+    if (prop?.kind !== "composed") return []
+    if (shape === "array") {
+        if (prop.value.kind !== "array") return []
+        return prop.value.items.flatMap(entry => entry.value.kind === "nodes" ? entry.value.value.items : [])
+    }
+    if (prop.value.kind !== "nodes") return []
+    return prop.value.value.items
+}
+
+function writeSlotEntries(items: CompositionSlotItem[], shape: SlotShape): CompositionPropValue {
+    if (shape === "array") {
+        const arrayItems: CompositionArrayItem[] = items.map(item => (
+            {itemId: item.itemId, value: {kind: "nodes", value: {items: [item]}}}
+        ))
+        return {kind: "composed", value: {kind: "array", items: arrayItems}}
+    }
+    return {kind: "composed", value: {kind: "nodes", value: {items}}}
+}
+
 /**
  * Inserts `item` into the `"nodes"` slot `propName` on the instance at `path`, at
  * `insertAtIndex`. Checked via `checkSlotValue` against the SAME resolved policy
@@ -157,7 +203,7 @@ export function insertSlotItem(
     document: CompositionDocument,
     metadata: MetadataDocument,
     library: ComponentLibraryData,
-    path: InstancePath,
+    path: ValuePath,
     propName: string,
     insertAtIndex: number,
     item: CompositionSlotItem
@@ -165,11 +211,13 @@ export function insertSlotItem(
     const host = getInstanceAtPath(document, path)
     const hostComponent = findHostComponent(metadata, host.componentId)
     const prop = host.props[propName]
-    const currentItems: CompositionSlotItem[] = prop?.kind === "nodes" ? prop.value.items : []
 
     const rules = resolvePropSlotRules(hostComponent, propName)
     if (rules.itemRule?.slot === undefined)
         return {ok: false, document, reason: `"${propName}" is not a nodes-kind slot on "${hostComponent.name}"`, diagnostics: []}
+
+    const shape: SlotShape = currentSlotShape(prop) ?? (rules.perEntry ? "array" : "nodes")
+    const currentItems: CompositionSlotItem[] = readSlotEntries(prop, shape)
 
     if (rules.collection?.maxItems !== undefined && currentItems.length + 1 > rules.collection.maxItems) {
         return {
@@ -189,7 +237,7 @@ export function insertSlotItem(
     nextItems.splice(insertAtIndex, 0, item)
     const nextDocument = updateInstanceAtPath(document, path, instance => ({
         ...instance,
-        props: {...instance.props, [propName]: {kind: "nodes", value: {items: nextItems}}}
+        props: {...instance.props, [propName]: writeSlotEntries(nextItems, shape)}
     }))
     return {ok: true, document: nextDocument}
 }
@@ -197,18 +245,19 @@ export function insertSlotItem(
 /** Removes the item with `itemId` from the `"nodes"` slot `propName`. A no-op (same document) if not found. */
 export function removeSlotItem(
     document: CompositionDocument,
-    path: InstancePath,
+    path: ValuePath,
     propName: string,
     itemId: string
 ): CompositionDocument {
     const host = getInstanceAtPath(document, path)
-    const prop = host.props[propName]
-    if (prop?.kind !== "nodes") return document
-    const nextItems = prop.value.items.filter(i => i.itemId !== itemId)
-    if (nextItems.length === prop.value.items.length) return document
+    const shape = currentSlotShape(host.props[propName])
+    if (shape === undefined) return document
+    const items = readSlotEntries(host.props[propName], shape)
+    const nextItems = items.filter(i => i.itemId !== itemId)
+    if (nextItems.length === items.length) return document
     return updateInstanceAtPath(document, path, instance => ({
         ...instance,
-        props: {...instance.props, [propName]: {kind: "nodes", value: {items: nextItems}}}
+        props: {...instance.props, [propName]: writeSlotEntries(nextItems, shape)}
     }))
 }
 
@@ -222,15 +271,15 @@ export function removeSlotItem(
  */
 export function moveSlotItem(
     document: CompositionDocument,
-    path: InstancePath,
+    path: ValuePath,
     propName: string,
     fromIndex: number,
     toIndex: number
 ): CompositionDocument {
     const host = getInstanceAtPath(document, path)
-    const prop = host.props[propName]
-    if (prop?.kind !== "nodes") return document
-    const items = prop.value.items
+    const shape = currentSlotShape(host.props[propName])
+    if (shape === undefined) return document
+    const items = readSlotEntries(host.props[propName], shape)
     if (fromIndex < 0 || fromIndex >= items.length || toIndex < 0 || toIndex >= items.length || fromIndex === toIndex)
         return document
     const nextItems = items.slice()
@@ -239,7 +288,7 @@ export function moveSlotItem(
     nextItems.splice(toIndex, 0, moved)
     return updateInstanceAtPath(document, path, instance => ({
         ...instance,
-        props: {...instance.props, [propName]: {kind: "nodes", value: {items: nextItems}}}
+        props: {...instance.props, [propName]: writeSlotEntries(nextItems, shape)}
     }))
 }
 
@@ -308,7 +357,7 @@ export function setRichTextProp(
     document: CompositionDocument,
     metadata: MetadataDocument,
     library: ComponentLibraryData,
-    path: InstancePath,
+    path: ValuePath,
     propName: string,
     value: RichTextValueJson
 ): SlotOperationResult {
@@ -320,7 +369,7 @@ export function setRichTextProp(
         ok: true,
         document: updateInstanceAtPath(document, path, instance => ({
             ...instance,
-            props: {...instance.props, [propName]: {kind: "richText", value}}
+            props: {...instance.props, [propName]: {kind: "composed", value: {kind: "richText", value}}}
         }))
     }
 }
@@ -356,7 +405,7 @@ export function setComponentRefProp(
     document: CompositionDocument,
     metadata: MetadataDocument,
     library: ComponentLibraryData,
-    path: InstancePath,
+    path: ValuePath,
     propName: string,
     identity: ComponentIdentity
 ): SlotOperationResult {
@@ -371,7 +420,7 @@ export function setComponentRefProp(
         ok: true,
         document: updateInstanceAtPath(document, path, instance => ({
             ...instance,
-            props: {...instance.props, [propName]: {kind: "componentRef", value: identity}}
+            props: {...instance.props, [propName]: {kind: "composed", value: {kind: "componentRef", value: identity}}}
         }))
     }
 }

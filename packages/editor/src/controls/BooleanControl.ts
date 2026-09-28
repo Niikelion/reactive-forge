@@ -15,7 +15,7 @@ export const BooleanControl: ControlComponent = (props) => {
         checked: current,
         onChange: (event: {target: {checked: boolean}}) => {
             const next = commitValue(schema, {type: "boolean", value: event.target.checked})
-            onChange({kind: "value", value: next})
+            onChange({kind: "composed", value: {kind: "leaf", value: next}})
         }
     })
 }

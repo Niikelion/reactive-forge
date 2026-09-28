@@ -17,7 +17,7 @@ export const DateControl: ControlComponent = (props) => {
             if (!event.target.value) return
             const iso = new Date(event.target.value).toISOString()
             const next = commitValue(schema, {type: "date", value: iso})
-            onChange({kind: "value", value: next})
+            onChange({kind: "composed", value: {kind: "leaf", value: next}})
         }
     })
 }

@@ -6,105 +6,283 @@ import {
     CompositionPropValue,
     CompositionSlotItem,
     CompositionValidationError,
+    CompositionValue,
     renderComposition,
     ValidationResult,
     validateComposition
 } from "@reactive-forge/runtime"
-import {ComponentLibraryData, MetadataDocument} from "@reactive-forge/schema"
+import {ComponentLibraryData, MetadataDocument, VariantLiteral} from "@reactive-forge/schema"
 
 // Editor-adapter preview hook (docs/development-plan.md point 5: "Editor
 // adapters: consume the same metadata/runtime and provide replaceable prop
 // controls"). This module is deliberately split into:
 //
-//  - pure, framework-agnostic helpers (`getInstanceAtPath`, `setPropAtPath`,
-//    `computePreviewState`, plus the slot operations in slots.ts) that own no
-//    React state and can be unit-tested directly, without a DOM/renderer -
-//    see tests/editor.test.cjs; and
+//  - pure, framework-agnostic helpers (`getValueAtPath`/`getInstanceAtPath`,
+//    `updateValueAtPath`/`updateInstanceAtPath`, `setPropAtPath`,
+//    `setVariantBranch`, `computePreviewState`, plus the slot operations in
+//    slots.ts) that own no React state and can be unit-tested directly,
+//    without a DOM/renderer - see tests/editor.test.cjs; and
 //  - `useComponentPreview`, a thin React hook built on top of them.
 //
-// ADDRESSING (phase 3 redesign): v1's `CompositionPath` was a plain array of
-// child indices (`[0, 1]` = root's first child's second child). The v2
-// composition document contract explicitly retired that scheme - a v2
-// document has no sibling `children` array at all, and the contract's own
-// stated reason for `instanceId`/`itemId` existing is that "child-index
-// addressing is unsuitable as persistent drag/edit identity after array
-// reordering" (docs/slot-contract.md's framing, restated in the phase-3
-// handoff). `InstancePath` replaces it with a chain of stable ids: each step
-// says "descend into the `"nodes"` slot at prop `propName`, then into the
-// item whose `itemId` is `itemId`" - reordering that slot's `items` array
-// never invalidates a path built this way, since it re-resolves by id, not
-// position. `[]` still addresses the document root.
-export interface InstancePathStep {
-    propName: string
-    itemId: string
+// ADDRESSING (docs/slot-contract-recursive.md section 3, "Editor addressing
+// generalization"): v1's `CompositionPath` was a plain array of child
+// indices (`[0, 1]` = root's first child's second child). v2 retired that
+// scheme for a one-level `InstancePath` chain of `{propName, itemId}` steps
+// (descend into the `"nodes"` slot at `propName`, then into the item whose
+// `itemId` is `itemId`) - reordering never invalidates a path built this
+// way, since it re-resolves by id, not position. v3's recursive
+// `CompositionValue` model (packages/runtime/src/composition.ts) generalizes
+// this to arbitrary depth: a `ValuePath` is a chain of `ValuePathStep`s, each
+// one dictated by what its *source* kind can be - `"prop"` only ever follows
+// a `CompositionInstance`, `"field"` only follows an `"object"` value,
+// `"arrayItem"` only follows an `"array"` value (resolved by `itemId`,
+// never position), `"variant"` only follows a `"variant"` value,
+// `"slotItem"` only follows a `"nodes"` value (resolved by `itemId`), and
+// `"instance"` only follows a `"slotItem"` step landing on a
+// `{kind:"instance"}` item. `InstancePath` is kept as a deprecated alias -
+// `type InstancePath = ValuePath` - for existing one-level call sites; new
+// nested-addressing call sites use `ValuePath` directly.
+export type ValuePathStep =
+    | { kind: "prop", propName: string }
+    | { kind: "field", name: string }
+    | { kind: "arrayItem", itemId: string }
+    | { kind: "variant" }
+    | { kind: "slotItem", itemId: string }
+    | { kind: "instance" }
+
+export type ValuePath = ValuePathStep[]
+
+/**
+ * @deprecated Use `ValuePath` for new call sites. Kept as a type-level alias
+ * (docs/slot-contract-recursive.md section 7.4) so existing one-level callers
+ * keep compiling; TypeScript cannot express "restricted to exactly the
+ * one-level `[prop, slotItem, instance]` shape" as a distinct type, so this
+ * is simply `ValuePath` under an old name.
+ */
+export type InstancePath = ValuePath
+
+/** @deprecated Use `ValuePathStep`. */
+export type InstancePathStep = ValuePathStep
+
+// ---------------------------------------------------------------------------------------------
+// Internal walk representation: a path alternates between three "current position" shapes -
+// sitting on a whole instance (about to take a "prop" step), sitting on a CompositionValue
+// (about to take a "field"/"arrayItem"/"variant" step, or a "slotItem" step that changes shape
+// again), or sitting on a resolved CompositionSlotItem (only ever followed by an "instance"
+// step). One recursive walker handles all three uniformly instead of three separate ones.
+// ---------------------------------------------------------------------------------------------
+type WalkNode =
+    | { tag: "instance", instance: CompositionInstance }
+    | { tag: "value", value: CompositionValue }
+    | { tag: "slotItem", item: CompositionSlotItem }
+
+function stepInto(node: WalkNode, step: ValuePathStep): WalkNode {
+    switch (step.kind) {
+        case "prop": {
+            if (node.tag !== "instance")
+                throw new Error(`"prop" step requires the current position to be a CompositionInstance`)
+            const prop = node.instance.props[step.propName]
+            if (prop === undefined || prop.kind !== "composed")
+                throw new Error(`Prop "${step.propName}" is not a "composed" value on instance "${node.instance.instanceId}"`)
+            return {tag: "value", value: prop.value}
+        }
+        case "field": {
+            if (node.tag !== "value" || node.value.kind !== "object")
+                throw new Error(`"field" step requires an "object"-kind CompositionValue`)
+            const child = node.value.fields[step.name]
+            if (child === undefined) throw new Error(`No field "${step.name}" in this "object" value`)
+            return {tag: "value", value: child}
+        }
+        case "arrayItem": {
+            if (node.tag !== "value" || node.value.kind !== "array")
+                throw new Error(`"arrayItem" step requires an "array"-kind CompositionValue`)
+            const item = node.value.items.find(i => i.itemId === step.itemId)
+            if (item === undefined) throw new Error(`No array item with itemId "${step.itemId}"`)
+            return {tag: "value", value: item.value}
+        }
+        case "variant": {
+            if (node.tag !== "value" || node.value.kind !== "variant")
+                throw new Error(`"variant" step requires a "variant"-kind CompositionValue`)
+            return {tag: "value", value: node.value.value}
+        }
+        case "slotItem": {
+            if (node.tag !== "value" || node.value.kind !== "nodes")
+                throw new Error(`"slotItem" step requires a "nodes"-kind CompositionValue`)
+            const item = node.value.value.items.find(i => i.itemId === step.itemId)
+            if (item === undefined) throw new Error(`No slot item with itemId "${step.itemId}"`)
+            return {tag: "slotItem", item}
+        }
+        case "instance": {
+            if (node.tag !== "slotItem" || node.item.kind !== "instance")
+                throw new Error(`"instance" step requires a "slotItem" step that landed on a {kind:"instance"} item`)
+            return {tag: "instance", instance: node.item.instance}
+        }
+    }
 }
 
-export type InstancePath = InstancePathStep[]
-
-function slotValueOf(instance: CompositionInstance, propName: string): CompositionSlotItem[] {
-    const prop = instance.props[propName]
-    if (prop === undefined || prop.kind !== "nodes")
-        throw new Error(`Prop "${propName}" is not a "nodes"-kind slot on instance "${instance.instanceId}"`)
-    return prop.value.items
+function walk(start: WalkNode, path: ValuePath): WalkNode {
+    let node = start
+    for (const step of path) node = stepInto(node, step)
+    return node
 }
 
 /**
- * Looks up the `CompositionInstance` at `path` inside `doc`, resolving each step by
- * `itemId` inside the named slot rather than by array position. Throws if a step's
- * `propName` is not a `"nodes"` slot on the current instance, or if no item with that
- * `itemId` (of kind `"instance"`) exists in it - a programming error in the caller
- * (e.g. addressing an item that was since removed), not a validation concern.
+ * Resolves the `CompositionValue` reached from `instance`'s own props by walking `path` -
+ * `path`'s first step must be `"prop"` (an instance's props are the only place a `ValuePath`
+ * can start from). Throws (a caller/programming-error condition) if any step's source shape
+ * doesn't match, or if an id-addressed step names an item that no longer exists.
  */
-export function getInstanceAtPath(doc: CompositionDocument, path: InstancePath): CompositionInstance {
-    let node: CompositionInstance = doc.root
-    for (const step of path) {
-        const items = slotValueOf(node, step.propName)
-        const item = items.find(i => i.itemId === step.itemId)
-        if (item === undefined)
-            throw new Error(`No item with itemId "${step.itemId}" in slot "${step.propName}"`)
-        if (item.kind !== "instance")
-            throw new Error(`Item "${step.itemId}" in slot "${step.propName}" is a "${item.kind}" leaf, not an instance`)
-        node = item.instance
-    }
-    return node
+export function getValueAtPath(instance: CompositionInstance, path: ValuePath): CompositionValue {
+    if (path.length === 0)
+        throw new Error("getValueAtPath requires a non-empty path (an instance itself is not a CompositionValue)")
+    const result = walk({tag: "instance", instance}, path)
+    if (result.tag !== "value")
+        throw new Error(`Path does not resolve to a CompositionValue (ended on a "${result.tag}")`)
+    return result.value
+}
+
+/**
+ * Looks up the `CompositionInstance` at `path` inside `doc`, resolving every id-bearing step
+ * (`"arrayItem"`/`"slotItem"`) by `itemId` rather than array position - the direct
+ * generalization of the old one-level `getInstanceAtPath` to arbitrary depth
+ * (docs/slot-contract-recursive.md section 3.1). `path: []` addresses the document root itself.
+ */
+export function getInstanceAtPath(document: CompositionDocument, path: ValuePath): CompositionInstance {
+    const result = walk({tag: "instance", instance: document.root}, path)
+    if (result.tag !== "instance")
+        throw new Error(`Path does not resolve to a CompositionInstance (ended on a "${result.tag}")`)
+    return result.instance
 }
 
 /** Back-compat alias kept for call sites/tests migrating from the v1 name. */
 export const getNodeAtPath = getInstanceAtPath
 
+// ---------------------------------------------------------------------------------------------
+// Rewrite: a recursive spine-copy mirroring `walk` above - at each step, recurse into the child
+// position first, then rebuild the CURRENT node with only that one child replaced (everything
+// else on the node is carried over by reference). `finish` is invoked once the path is
+// exhausted, replacing whatever "current position" was reached; its return tag must match what
+// the caller (`updateValueAtPath`/`updateInstanceAtPath`/`setVariantBranch`) expects, and every
+// intermediate step also validates the resulting child's tag matches what it can hold, so a
+// caller mismatch (e.g. rewriting a "field" position to a bare CompositionInstance) fails fast.
+// ---------------------------------------------------------------------------------------------
+function rewriteNode(node: WalkNode, path: ValuePath, finish: (node: WalkNode) => WalkNode): WalkNode {
+    if (path.length === 0) return finish(node)
+    const [step, ...rest] = path as [ValuePathStep, ...ValuePath]
+
+    switch (step.kind) {
+        case "prop": {
+            if (node.tag !== "instance")
+                throw new Error(`"prop" step requires the current position to be a CompositionInstance`)
+            const prop = node.instance.props[step.propName]
+            if (prop === undefined || prop.kind !== "composed")
+                throw new Error(`Prop "${step.propName}" is not a "composed" value on instance "${node.instance.instanceId}"`)
+            const childResult = rewriteNode({tag: "value", value: prop.value}, rest, finish)
+            if (childResult.tag !== "value")
+                throw new Error(`A "prop" position must rewrite to a CompositionValue`)
+            return {
+                tag: "instance",
+                instance: {
+                    ...node.instance,
+                    props: {...node.instance.props, [step.propName]: {kind: "composed", value: childResult.value}}
+                }
+            }
+        }
+        case "field": {
+            if (node.tag !== "value" || node.value.kind !== "object")
+                throw new Error(`"field" step requires an "object"-kind CompositionValue`)
+            const child = node.value.fields[step.name]
+            if (child === undefined) throw new Error(`No field "${step.name}" in this "object" value`)
+            const childResult = rewriteNode({tag: "value", value: child}, rest, finish)
+            if (childResult.tag !== "value")
+                throw new Error(`A "field" position must rewrite to a CompositionValue`)
+            return {tag: "value", value: {kind: "object", fields: {...node.value.fields, [step.name]: childResult.value}}}
+        }
+        case "arrayItem": {
+            if (node.tag !== "value" || node.value.kind !== "array")
+                throw new Error(`"arrayItem" step requires an "array"-kind CompositionValue`)
+            const index = node.value.items.findIndex(i => i.itemId === step.itemId)
+            if (index === -1) throw new Error(`No array item with itemId "${step.itemId}"`)
+            const target = node.value.items[index]
+            if (target === undefined) throw new Error(`No array item with itemId "${step.itemId}"`)
+            const childResult = rewriteNode({tag: "value", value: target.value}, rest, finish)
+            if (childResult.tag !== "value")
+                throw new Error(`An "arrayItem" position must rewrite to a CompositionValue`)
+            const nextItems = node.value.items.slice()
+            nextItems[index] = {...target, value: childResult.value}
+            return {tag: "value", value: {kind: "array", items: nextItems}}
+        }
+        case "variant": {
+            if (node.tag !== "value" || node.value.kind !== "variant")
+                throw new Error(`"variant" step requires a "variant"-kind CompositionValue`)
+            const childResult = rewriteNode({tag: "value", value: node.value.value}, rest, finish)
+            if (childResult.tag !== "value")
+                throw new Error(`A "variant" position must rewrite to a CompositionValue`)
+            return {tag: "value", value: {...node.value, value: childResult.value}}
+        }
+        case "slotItem": {
+            if (node.tag !== "value" || node.value.kind !== "nodes")
+                throw new Error(`"slotItem" step requires a "nodes"-kind CompositionValue`)
+            const index = node.value.value.items.findIndex(i => i.itemId === step.itemId)
+            if (index === -1) throw new Error(`No slot item with itemId "${step.itemId}"`)
+            const target = node.value.value.items[index]
+            if (target === undefined) throw new Error(`No slot item with itemId "${step.itemId}"`)
+            const childResult = rewriteNode({tag: "slotItem", item: target}, rest, finish)
+            if (childResult.tag !== "slotItem")
+                throw new Error(`A "slotItem" position must rewrite to a CompositionSlotItem`)
+            const nextItems = node.value.value.items.slice()
+            nextItems[index] = childResult.item
+            return {tag: "value", value: {kind: "nodes", value: {items: nextItems}}}
+        }
+        case "instance": {
+            if (node.tag !== "slotItem" || node.item.kind !== "instance")
+                throw new Error(`"instance" step requires a "slotItem" step that landed on a {kind:"instance"} item`)
+            const childResult = rewriteNode({tag: "instance", instance: node.item.instance}, rest, finish)
+            if (childResult.tag !== "instance")
+                throw new Error(`An "instance" position must rewrite to a CompositionInstance`)
+            return {tag: "slotItem", item: {...node.item, instance: childResult.instance}}
+        }
+    }
+}
+
+/**
+ * Returns a new `CompositionInstance` with the `CompositionValue` at `path` (from `instance`'s
+ * own props) replaced by `rewrite(currentValue)`, leaving everything else structurally shared -
+ * only the spine from `instance` down to `path` is copied. Never mutates `instance`.
+ */
+export function updateValueAtPath(
+    instance: CompositionInstance,
+    path: ValuePath,
+    rewrite: (value: CompositionValue) => CompositionValue
+): CompositionInstance {
+    if (path.length === 0)
+        throw new Error("updateValueAtPath requires a non-empty path (an instance itself is not a CompositionValue)")
+    const result = rewriteNode({tag: "instance", instance}, path, node => {
+        if (node.tag !== "value") throw new Error(`Path does not resolve to a CompositionValue (ended on a "${node.tag}")`)
+        return {tag: "value", value: rewrite(node.value)}
+    })
+    if (result.tag !== "instance") throw new Error("internal error: root rewrite did not return an instance")
+    return result.instance
+}
+
 /**
  * Returns a new `CompositionDocument` with the instance at `path` replaced by
  * `rewrite(currentInstance)`, leaving everything else structurally shared (only the
  * spine from the root down to `path` is copied). Never mutates `doc`. The building
- * block every other document-editing helper (`setPropAtPath`, and the slot operations
- * in slots.ts) is implemented on top of.
+ * block every other document-editing helper (`setPropAtPath`, `setVariantBranch`, and the
+ * slot operations in slots.ts) is implemented on top of. `path: []` targets the document root.
  */
 export function updateInstanceAtPath(
-    doc: CompositionDocument,
-    path: InstancePath,
+    document: CompositionDocument,
+    path: ValuePath,
     rewrite: (instance: CompositionInstance) => CompositionInstance
 ): CompositionDocument {
-    function go(node: CompositionInstance, remaining: InstancePath): CompositionInstance {
-        if (remaining.length === 0) return rewrite(node)
-        const [step, ...rest] = remaining as [InstancePathStep, ...InstancePath]
-        const items = slotValueOf(node, step.propName)
-        const index = items.findIndex(i => i.itemId === step.itemId)
-        if (index === -1)
-            throw new Error(`No item with itemId "${step.itemId}" in slot "${step.propName}"`)
-        const target = items[index]
-        if (target === undefined || target.kind !== "instance")
-            throw new Error(`Item "${step.itemId}" in slot "${step.propName}" is not an instance`)
-        const nextItems = items.slice()
-        nextItems[index] = {...target, instance: go(target.instance, rest)}
-        return {
-            ...node,
-            props: {
-                ...node.props,
-                [step.propName]: {kind: "nodes", value: {items: nextItems}}
-            }
-        }
-    }
-    return {...doc, root: go(doc.root, path)}
+    const result = rewriteNode({tag: "instance", instance: document.root}, path, node => {
+        if (node.tag !== "instance") throw new Error(`Path does not resolve to a CompositionInstance (ended on a "${node.tag}")`)
+        return {tag: "instance", instance: rewrite(node.instance)}
+    })
+    if (result.tag !== "instance") throw new Error("internal error: root rewrite did not return an instance")
+    return {...document, root: result.instance}
 }
 
 /**
@@ -114,11 +292,35 @@ export function updateInstanceAtPath(
  */
 export function setPropAtPath(
     doc: CompositionDocument,
-    path: InstancePath,
+    path: ValuePath,
     propName: string,
     value: CompositionPropValue
 ): CompositionDocument {
     return updateInstanceAtPath(doc, path, instance => ({...instance, props: {...instance.props, [propName]: value}}))
+}
+
+/**
+ * Explicitly changes which union member is selected at `path` (docs/slot-contract-recursive.md
+ * section 3.3) - the ONE deliberate operation allowed to materialize/replace a "variant" node
+ * (or a not-yet-decomposed position) just to select a branch; nothing else in this module does
+ * this implicitly. `path` addresses the position itself (its last step is typically a `"field"`/
+ * `"arrayItem"`/`"prop"` step whose current value becomes the new `{kind:"variant", ...}` node -
+ * a `"variant"` step is never part of `path` itself, since selecting a branch structurally
+ * replaces this position rather than descending into an existing branch).
+ */
+export function setVariantBranch(
+    document: CompositionDocument,
+    path: ValuePath,
+    selector: { prop: string, equals: VariantLiteral },
+    initialValue: CompositionValue
+): CompositionDocument {
+    if (path.length === 0)
+        throw new Error("setVariantBranch requires a non-empty path (the document root is never itself a union position)")
+    const result = rewriteNode({tag: "instance", instance: document.root}, path, () => (
+        {tag: "value", value: {kind: "variant", selector, value: initialValue}}
+    ))
+    if (result.tag !== "instance") throw new Error("internal error: root rewrite did not return an instance")
+    return {...document, root: result.instance}
 }
 
 export interface PreviewState {
@@ -167,7 +369,7 @@ export interface UseComponentPreviewOptions {
     /** Host-supplied named callback bindings; see `CallbackRegistry` in `@reactive-forge/runtime`. */
     callbacks?: CallbackRegistry
     /** Which instance prop edits target; defaults to the document root (`[]`). */
-    targetPath?: InstancePath
+    targetPath?: ValuePath
 }
 
 export interface ComponentPreviewHandle {

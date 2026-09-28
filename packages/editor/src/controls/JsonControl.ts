@@ -35,7 +35,7 @@ export const JsonControl: ControlComponent = (props) => {
                     const parsed = JSON.parse(text) as ValueJson
                     const next = commitValue(schema, parsed)
                     setError(undefined)
-                    onChange({kind: "value", value: next})
+                    onChange({kind: "composed", value: {kind: "leaf", value: next}})
                 } catch (e) {
                     setError(e instanceof Error ? e.message : String(e))
                 }

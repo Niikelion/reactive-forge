@@ -253,20 +253,33 @@ test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + 
     // The exact document shape the "Insert Badge" browser interaction produces (docs/baseline.md):
     // SlotCard's real header/actions/icon/caption slots, actions holding one real external Badge
     // instance.
+    // v3 (docs/slot-contract-recursive.md): schemaVersion 3, CompositionPropValue collapsed to
+    // {kind:"callback"} / {kind:"composed", value: CompositionValue}. "actions" (ReactNode[]) is
+    // a genuine DECLARED ARRAY with an each() per-entry policy - its own top-level value is
+    // "array", not a flat "nodes" list; each declared entry is independently "nodes"-kind
+    // (packages/editor/src/slots.ts's insertSlotItem represents the simple "one entry = one node"
+    // case by giving the entry's own itemId the same value as its single inner slot item's itemId
+    // - mirrored here by using "a1" for both).
     const doc = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       root: {
         kind: 'instance',
         instanceId: 'root',
         componentId: slotCardMeta.id,
         props: {
-          header: { kind: 'nodes', value: { items: [{ itemId: 'h1', kind: 'text', value: 'Reactive Forge Demo' }] } },
+          header: { kind: 'composed', value: { kind: 'nodes', value: { items: [{ itemId: 'h1', kind: 'text', value: 'Reactive Forge Demo' }] } } },
           actions: {
-            kind: 'nodes',
-            value: { items: [{ itemId: 'a1', kind: 'instance', instance: { kind: 'instance', instanceId: 'badge-1', componentId: badgeMeta.id, props: {} } }] },
+            kind: 'composed',
+            value: {
+              kind: 'array',
+              items: [{
+                itemId: 'a1',
+                value: { kind: 'nodes', value: { items: [{ itemId: 'a1', kind: 'instance', instance: { kind: 'instance', instanceId: 'badge-1', componentId: badgeMeta.id, props: {} } }] } },
+              }],
+            },
           },
-          icon: { kind: 'componentRef', value: { source: 'project', id: slotIconMeta.id } },
-          caption: { kind: 'richText', value: { kind: 'richText', version: 1, inline: false, nodes: [{ type: 'paragraph', children: [{ type: 'text', text: 'Edit me', marks: [] }] }] } },
+          icon: { kind: 'composed', value: { kind: 'componentRef', value: { source: 'project', id: slotIconMeta.id } } },
+          caption: { kind: 'composed', value: { kind: 'richText', value: { kind: 'richText', version: 1, inline: false, nodes: [{ type: 'paragraph', children: [{ type: 'text', text: 'Edit me', marks: [] }] }] } } },
         },
       },
     };
@@ -308,14 +321,14 @@ test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + 
     // proves compiles, reused here against the demo's own real SlotCard/SlotIcon metadata/registry
     // instead of a hand-rolled one. ---
     const projectOnlyDoc = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       root: {
         kind: 'instance',
         instanceId: 'root',
         componentId: slotCardMeta.id,
         props: {
           header: doc.root.props.header,
-          actions: { kind: 'nodes', value: { items: [] } },
+          actions: { kind: 'composed', value: { kind: 'array', items: [] } },
           icon: doc.root.props.icon,
           caption: doc.root.props.caption,
         },
