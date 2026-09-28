@@ -28,5 +28,10 @@ export default {
 	tsConfigFilePath: "./bundle-project/tsconfig.json",
 	typescriptLibPath: "../../node_modules/typescript/lib",
 	outDir: "./editor-demo/out-demo",
-	pathPrefix: "fixture/"
+	pathPrefix: "fixture/",
+	// Phase 3 addition (docs/claude-slots-handoff.md): the demo now exercises real slot
+	// outlets (SlotCard's actions/icon/caption), which only exist in a schemaVersion 2
+	// metadata.json with colocated annotations turned on - mirrors
+	// tests/fixtures/bundle-project/forge.runtime-v2.config.ts/forge.editor.config.ts.
+	annotationSources: { colocated: true }
 } satisfies ForgeConfig
