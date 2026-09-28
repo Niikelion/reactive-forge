@@ -27,7 +27,7 @@ const fixtureProject = path.join(root, 'tests', 'fixtures', 'bundle-project');
 const fixtureOutDir = path.join(fixtureProject, 'out-export');
 const scratchDir = path.join(fixtureOutDir, 'exported');
 
-const { validateComposition, renderComposition, exportToTsx } = require(path.join(root, 'packages', 'runtime', 'src', 'index.ts'));
+const { validateComposition, renderComposition, exportToTsx, CompositionValidationError } = require(path.join(root, 'packages', 'runtime', 'src', 'index.ts'));
 
 function runCli(args, cwd) {
   const launch = `
@@ -174,7 +174,7 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
 
     fs.mkdirSync(scratchDir, { recursive: true });
     const exportedFilePath = path.join(scratchDir, 'ExportedComposition.tsx');
-    const tsxSource = exportToTsx(doc, metadata, { resolveImportPath: scratchRelativeResolver() });
+    const tsxSource = exportToTsx(doc, metadata, registry, { resolveImportPath: scratchRelativeResolver() });
 
     assert.match(tsxSource, /^import \{ Card } from/m, 'imports the Card component');
     assert.match(tsxSource, /^import \{ ExportShowcase } from/m, 'imports the ExportShowcase component');
@@ -300,7 +300,7 @@ test('exportToTsx serializes "nodes"/"richText"/"componentRef" slot values ident
 
     fs.mkdirSync(scratchDir, { recursive: true });
     const exportedFilePath = path.join(scratchDir, 'ExportedSlotComposition.tsx');
-    const tsxSource = exportToTsx(doc, metadata, {
+    const tsxSource = exportToTsx(doc, metadata, registry, {
       exportedComponentName: 'ExportedSlotComposition',
       resolveImportPath: scratchRelativeResolver(),
     });
@@ -342,6 +342,51 @@ test('exportToTsx serializes "nodes"/"richText"/"componentRef" slot values ident
     const exportedHtml = renderToStaticMarkup(createElement(exportedComponent, { callbacks: {} }));
 
     assert.equal(exportedHtml, runtimeHtml, 'the exported TSX renders byte-identical HTML to renderComposition for a document exercising "nodes"/"richText"/"componentRef"');
+  } finally {
+    cleanFixtureOutput();
+  }
+});
+
+test('exportToTsx refuses an invalid document instead of silently serializing it (Codex repair finding #4)', async () => {
+  const { metadata, registry } = await buildFixture();
+  try {
+    const slotCardMeta = byName(metadata, 'SlotCard');
+    const greeterMeta = byName(metadata, 'Greeter');
+
+    // SlotCard.icon's real, colocated slot rule only accepts SlotIcon (see
+    // tests/fixtures/bundle-project/src/components/SlotCard.tsx) - pointing it at Greeter instead
+    // is a real, genuine policy violation, not a hand-rolled edge case.
+    const invalidDoc = {
+      schemaVersion: 2,
+      root: {
+        kind: 'instance',
+        instanceId: 'root-invalid',
+        componentId: slotCardMeta.id,
+        props: {
+          header: { kind: 'nodes', value: { items: [] } },
+          actions: { kind: 'nodes', value: { items: [] } },
+          icon: { kind: 'componentRef', value: { source: 'project', id: greeterMeta.id } },
+          caption: { kind: 'richText', value: { kind: 'richText', version: 1, inline: false, nodes: [] } },
+        },
+      },
+    };
+
+    // Before the fix, exportToTsx never validated at all - it required no `library` parameter and
+    // would happily serialize `icon={Greeter}` into TSX text, even though that value violates
+    // SlotCard's own real, colocated policy.
+    const preValidation = validateComposition(invalidDoc, metadata, registry);
+    assert.equal(preValidation.valid, false, 'sanity check: this document really is invalid against the real SlotCard policy');
+    assert.ok(preValidation.diagnostics.some(d => d.code === 'component-not-accepted'), 'the real rejection reason is Greeter not being in icon\'s accepts list');
+
+    assert.throws(
+      () => exportToTsx(invalidDoc, metadata, registry),
+      (err) => {
+        assert.ok(err instanceof CompositionValidationError, 'exportToTsx throws the SAME CompositionValidationError type renderComposition throws, not a parallel error shape');
+        assert.ok(err.diagnostics.some(d => d.code === 'component-not-accepted'), 'the thrown error carries the real, actionable diagnostic');
+        return true;
+      },
+      'exportToTsx refuses to serialize a document that violates a real slot policy'
+    );
   } finally {
     cleanFixtureOutput();
   }

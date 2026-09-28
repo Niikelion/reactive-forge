@@ -71,18 +71,26 @@ export interface PaletteEntry {
     result: SlotCheckResult
 }
 
+// Real bug fixed (Codex repair handoff finding #2): `currentItemCount`/`currentNonVoidCount` must
+// reflect the FULL resulting slot - inserting at index 0 with one existing item and maxItems:1
+// still exceeds the cap, regardless of where the new item lands. The previous `items.slice(0,
+// index)` only counted items *before* the insertion point, so inserting anywhere but the very end
+// undercounted and could commit an over-capacity document. `index` is unused for cardinality now
+// (kept in the signature since callers still pass it, for palette-entry-at-a-specific-position
+// semantics elsewhere) - insertion position never changes how many items the slot ends up holding.
 function slotCheckContextFor(
     items: CompositionSlotItem[],
-    index: number,
+    _index: number,
     perEntry: boolean,
-    library: ComponentLibraryData
+    library: ComponentLibraryData,
+    metadata: MetadataDocument
 ): SlotCheckContext {
-    if (perEntry) return {library, currentItemCount: 0, currentNonVoidCount: 0}
-    const before = items.slice(0, index)
+    if (perEntry) return {library, currentItemCount: 0, currentNonVoidCount: 0, metadata}
     return {
         library,
-        currentItemCount: before.length,
-        currentNonVoidCount: before.filter(i => i.kind !== "void").length
+        currentItemCount: items.length,
+        currentNonVoidCount: items.filter(i => i.kind !== "void").length,
+        metadata
     }
 }
 
@@ -104,7 +112,7 @@ export function computeInsertablePalette(
 ): PaletteEntry[] {
     const rules = resolvePropSlotRules(hostComponent, propName)
     if (rules.itemRule?.slot === undefined) return []
-    const context = slotCheckContextFor(currentItems, insertAtIndex, rules.perEntry, library)
+    const context = slotCheckContextFor(currentItems, insertAtIndex, rules.perEntry, library, metadata)
     return metadata.components.map(component => {
         const candidate: SlotItemCandidate = {itemId: "candidate", kind: "instance", instance: {componentId: component.id}}
         return {component, result: checkSlotValue(rules.itemRule, candidate, context)}
@@ -173,7 +181,7 @@ export function insertSlotItem(
     }
 
     const candidate: SlotItemCandidate = item
-    const context = slotCheckContextFor(currentItems, insertAtIndex, rules.perEntry, library)
+    const context = slotCheckContextFor(currentItems, insertAtIndex, rules.perEntry, library, metadata)
     const result = checkSlotValue(rules.itemRule, candidate, context)
     if (!result.ok) return {ok: false, document, reason: describeRejection(result), diagnostics: result.diagnostics}
 

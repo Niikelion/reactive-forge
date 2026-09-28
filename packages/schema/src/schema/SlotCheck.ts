@@ -1,4 +1,4 @@
-import {ComponentMetadata, Diagnostic} from "@/schema/metadata";
+import {ComponentMetadata, Diagnostic, MetadataDocument} from "@/schema/metadata";
 import {EffectiveSlotRule, SlotPolicy} from "@/schema/SlotPolicy";
 import {isPathResolutionDiagnostic, pathEquals, resolvePath, SlotPath, stripNullish} from "@/schema/SlotPath";
 import {ReactNodeSchema} from "@/schema/ReactNode";
@@ -71,6 +71,14 @@ export interface SlotCheckContext {
     library: ComponentLibraryData
     currentItemCount: number
     currentNonVoidCount: number
+    // Needed to resolve a candidate "instance" item's real ComponentIdentity (project vs.
+    // external) before comparing it against a "components"-policy accepts list - see
+    // `resolveInstanceIdentity` below (Codex repair handoff finding #3). Optional: a caller
+    // checking a richText/componentRef candidate (which already carries a full ComponentIdentity,
+    // not a bare componentId) never needs it, and every real production caller that DOES construct
+    // an "instance" candidate (packages/runtime/src/validate.ts, packages/editor/src/slots.ts)
+    // already has a MetadataDocument in scope and supplies it.
+    metadata?: MetadataDocument
 }
 
 export type SlotCheckResult =
@@ -160,6 +168,22 @@ function isResolvableInLibrary(identity: ComponentIdentity, library: ComponentLi
     return findComponentEntry(library, identity.id) !== undefined
 }
 
+// Real bug fixed (Codex repair handoff finding #3): a `SlotItemCandidate`'s "instance" only
+// carries a bare `componentId` string (the registry/metadata id, same for project and external
+// components - see docs/metadata-contract.md's stable component identity). Building
+// `{source: "project", id: componentId}` unconditionally from it, as `checkSlotItem`'s
+// "components" branch previously did, means an instance of an actually-external component can
+// never match an `accepts` list entry shaped `{source: "external", package, ...}` - even though
+// that exact instance is genuinely registered and was genuinely accepted by codegen's own
+// `policy-type-mismatch` gate. Resolves the real identity via `metadata.components[].external`
+// (already present, no new dependency); falls back to a project identity when `metadata` is not
+// supplied or the id isn't found there, matching the previous, still-correct behavior for a real
+// project component.
+function resolveInstanceIdentity(componentId: string, metadata: MetadataDocument | undefined): ComponentIdentity {
+    const external = metadata?.components.find(c => c.id === componentId)?.external
+    return external ?? {source: "project", id: componentId}
+}
+
 function checkComponentRef(policy: SlotPolicy, candidate: ComponentIdentity, context: SlotCheckContext): SlotCheckResult {
     if (policy.kind !== "componentRef")
         return fail("policy-type-mismatch", `A component reference is not accepted by a "${policy.kind}" policy`)
@@ -194,8 +218,8 @@ function checkSlotItem(policy: SlotPolicy, candidate: SlotItemCandidate, context
     }
 
     // policy.kind === "components"
-    const projectIdentity: ComponentIdentity = {source: "project", id: candidate.instance.componentId}
-    if (!acceptsIdentity(policy.accepts, projectIdentity))
+    const identity = resolveInstanceIdentity(candidate.instance.componentId, context.metadata)
+    if (!acceptsIdentity(policy.accepts, identity))
         return fail("component-not-accepted", `Component "${candidate.instance.componentId}" is not in this slot's accepted list`)
     if (!findComponentEntry(context.library, candidate.instance.componentId))
         return fail("component-not-in-library", `Component "${candidate.instance.componentId}" is accepted but not registered in the component library`)

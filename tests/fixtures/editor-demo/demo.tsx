@@ -403,7 +403,7 @@ function Editor({metadata, library}: LoadedLibrary) {
      */
     function handleExport() {
         try {
-            const source = exportToTsx(preview.document, metadata)
+            const source = exportToTsx(preview.document, metadata, library)
             setExportedTsx(source)
             setExportError("")
         } catch (e) {
