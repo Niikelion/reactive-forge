@@ -144,8 +144,8 @@ function validateSlotValue(
         // perEntry: each item is its own independent entry (0 prior siblings, always). Shared
         // slot: items compete cumulatively for one budget (item N sees N prior siblings).
         const context: SlotCheckContext = perEntry
-            ? {library, currentItemCount: 0, currentNonVoidCount: 0}
-            : {library, currentItemCount: index, currentNonVoidCount: nonVoidCount}
+            ? {library, currentItemCount: 0, currentNonVoidCount: 0, metadata}
+            : {library, currentItemCount: index, currentNonVoidCount: nonVoidCount, metadata}
         const result = checkSlotValue(itemRule, toSlotCheckCandidate(item), context)
         if (!result.ok) {
             for (const d of result.diagnostics)

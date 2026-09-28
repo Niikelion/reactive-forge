@@ -1,5 +1,6 @@
 import type {
     ComponentIdentity,
+    ComponentLibraryData,
     ComponentMetadata,
     ExternalComponentIdentity,
     MetadataDocument,
@@ -9,7 +10,8 @@ import type {
     ValueJson
 } from "@reactive-forge/schema"
 import {CompositionDocument, CompositionInstance, CompositionPropValue, CompositionSlotItem} from "./composition.js"
-import {resolvePropSlotRules} from "./validate.js"
+import {resolvePropSlotRules, validateComposition} from "./validate.js"
+import {CompositionValidationError} from "./render.js"
 
 // Composition-to-TSX export (gate E, extended for slots — docs/slot-contract.md section 9).
 // Pure source-text generation - no compiler dependency (no ts-morph/typescript/esbuild),
@@ -77,20 +79,28 @@ export interface ExportOptions {
  * `"element"` reference, or a `"componentRef"` prop value (project or external identity) - and a
  * single exported component whose JSX body mirrors the composition tree exactly.
  *
- * Does not validate `doc` against a `ComponentLibraryData` (this is a static export - no loaded
- * components are required). It does resolve every referenced component id/identity against
- * `metadata`, and throws a plain `Error` if a project id has no corresponding `ComponentMetadata`
- * entry, since the exporter cannot produce a valid import for a component it cannot identify.
- * Callers wanting full structural validation (missing required props, wrong-typed values,
- * unresolved callbacks, slot-policy violations) should run `validateComposition` from
- * `./validate.js` first - the same function `renderComposition` uses.
+ * Real bug fixed (Codex repair handoff finding #4): this previously never validated `doc` at all,
+ * despite docs/slot-contract.md section 8 explicitly naming "export preflight" as one of the
+ * consumers required to share the SAME validation `renderComposition`/document-load use - its own
+ * doc comment used to delegate that responsibility entirely to the caller, contradicting the
+ * contract. `exportToTsx` now requires `library` (needed to run `validateComposition`, the exact
+ * function `renderComposition` also runs before rendering) and throws `CompositionValidationError`
+ * - the same error type/shape `renderComposition` throws, not a parallel one - before serializing
+ * anything, so a document with a forbidden nested component, a disallowed rich-text mark, or
+ * excess cardinality can never produce TSX source text at all. Runs with no `callbacks` registry
+ * (export has nothing live to check callback names against - it only ever emits `callbacks.name`
+ * symbolically), so an `unresolved-callback` diagnostic is not raised here; every other check
+ * (slot policy, required props, value types, component registration) still runs in full.
  */
-export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument, options: ExportOptions = {}): string {
+export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument, library: ComponentLibraryData, options: ExportOptions = {}): string {
     const schemaVersion: number = doc.schemaVersion
     if (schemaVersion === 1)
         throw new Error(`exportToTsx: composition schemaVersion 1 is not accepted by the v2 exporter; call migrateCompositionDocumentV1ToV2(doc) first`)
     if (schemaVersion !== 2)
         throw new Error(`exportToTsx: unsupported composition schemaVersion: ${String(schemaVersion)}`)
+
+    const validation = validateComposition(doc, metadata, library)
+    if (!validation.valid) throw new CompositionValidationError(validation.diagnostics)
 
     const exportedComponentName = options.exportedComponentName ?? "ExportedComposition"
     const callbacksParamName = options.callbacksParamName ?? "callbacks"

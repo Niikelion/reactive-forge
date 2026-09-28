@@ -353,6 +353,51 @@ test('editor slot outlets: palette filtering, insertion, rejection, reordering, 
   }
 });
 
+test('editor slot outlets: insertion capacity counts the FULL resulting slot, not just items before the insertion index (Codex repair finding #2)', () => {
+  // A minimal, hand-built (no real CLI run needed - checkSlotValue/insertSlotItem behave
+  // identically regardless of where metadata came from, per tests/schema.test.cjs's own
+  // convention) non-per-entry ReactNode slot with its own maxItems: 1, reached WITHOUT each() -
+  // SlotCard.actions can't reproduce this bug (its per-entry policy always uses
+  // currentItemCount: 0, unaffected), so this needs a slot whose OWN maxItems bounds
+  // CompositionSlotValue.items directly.
+  const hostMeta = {
+    id: 'host-1',
+    name: 'Host',
+    sourcePath: 'virtual/Host.tsx',
+    isDefault: false,
+    props: { header: { schema: { type: 'reactNode' }, required: false, diagnostics: [] } },
+    diagnostics: [],
+    slots: [{ path: ['header'], slot: { kind: 'any', maxItems: 1 }, appliedFrom: { slot: 'project' } }],
+  };
+  const metadata = { schemaVersion: 2, generatedAt: '2026-01-01T00:00:00.000Z', components: [hostMeta], externalLibraries: [] };
+  const library = { files: [] };
+  const doc = {
+    schemaVersion: 2,
+    root: {
+      kind: 'instance',
+      instanceId: 'root',
+      componentId: 'host-1',
+      props: { header: { kind: 'nodes', value: { items: [{ itemId: 'existing', kind: 'text', value: 'first' }] } } },
+    },
+  };
+
+  // Before the fix: items.slice(0, 0) = [], currentItemCount: 0, 0+1 > 1 is false -> wrongly
+  // accepted, committing a 2-item slot into a maxItems:1 policy.
+  const atStart = editor.insertSlotItem(doc, metadata, library, [], 'header', 0, editor.newTextItem('second'));
+  assert.equal(atStart.ok, false, 'inserting at index 0 into an already-full maxItems:1 slot must be rejected regardless of insertion position');
+  assert.equal(atStart.document, doc, 'a rejected insertion leaves the document unchanged (same reference)');
+
+  // Insertion at the end (the one position the old slice-based count happened to get right) must
+  // still be rejected the same way - proves the fix isn't position-dependent either.
+  const atEnd = editor.insertSlotItem(doc, metadata, library, [], 'header', 1, editor.newTextItem('second'));
+  assert.equal(atEnd.ok, false, 'inserting at the end of an already-full maxItems:1 slot is also rejected');
+
+  // Control: an empty slot still accepts one item.
+  const emptyDoc = { ...doc, root: { ...doc.root, props: { header: { kind: 'nodes', value: { items: [] } } } } };
+  const intoEmpty = editor.insertSlotItem(emptyDoc, metadata, library, [], 'header', 0, editor.newTextItem('only'));
+  assert.equal(intoEmpty.ok, true, 'an empty maxItems:1 slot still accepts its one allowed item');
+});
+
 test('editor slot outlets: rich text mark toggling validated through checkSlotValue', async () => {
   const { metadata, registry } = await buildFixture();
   try {

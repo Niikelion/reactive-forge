@@ -487,3 +487,49 @@ test('S44: checkSlotValue rejects an accepts-list match that is not actually reg
   const refOk = checkSlotValue(refRule, buttonIdentity, {library: libraryWithButton, currentItemCount: 0, currentNonVoidCount: 0});
   assert.equal(refOk.ok, true);
 });
+
+test('S45: checkSlotValue matches an "instance" candidate against its real external identity, not an assumed project one (Codex repair finding #3)', () => {
+  const externalIdentity = {source: 'external', package: '@vendor/ui', exportName: 'VendorButton', isDefault: false};
+  const externalId = 'vendor-button-1';
+  const vendorMetadataDoc = {
+    schemaVersion: 2,
+    generatedAt: '2026-01-01T00:00:00.000Z',
+    components: [{
+      id: externalId,
+      name: 'VendorButton',
+      sourcePath: 'node_modules/@vendor/ui/dist/index.d.ts',
+      isDefault: false,
+      props: {},
+      diagnostics: [],
+      external: externalIdentity,
+    }],
+    externalLibraries: [],
+  };
+  const externalOnlyRule = {
+    path: ['actions', each()],
+    slot: {kind: 'components', accepts: [externalIdentity], maxItems: 1},
+    appliedFrom: {slot: 'library'},
+  };
+  const libraryWithVendorButton = {
+    files: [{path: 'vendor.tsx', components: {VendorButton: {id: externalId, component: () => null, args: {type: 'object', properties: {}}}}}],
+  };
+
+  // Without metadata, an "instance" candidate can only be matched as a project identity (the
+  // previous, still-honest fallback behavior) - it does NOT match an accepts list containing only
+  // the external identity.
+  const withoutMetadata = checkSlotValue(
+    externalOnlyRule,
+    {itemId: 'i7', kind: 'instance', instance: {componentId: externalId}},
+    {library: libraryWithVendorButton, currentItemCount: 0, currentNonVoidCount: 0}
+  );
+  assert.equal(withoutMetadata.ok, false, 'without metadata to resolve external identity, the fallback project-identity guess correctly does not match');
+
+  // With metadata supplied (as every real caller - validate.ts, slots.ts - does), the candidate's
+  // real external identity resolves and matches its own accepts-list entry.
+  const withMetadata = checkSlotValue(
+    externalOnlyRule,
+    {itemId: 'i8', kind: 'instance', instance: {componentId: externalId}},
+    {library: libraryWithVendorButton, currentItemCount: 0, currentNonVoidCount: 0, metadata: vendorMetadataDoc}
+  );
+  assert.equal(withMetadata.ok, true, 'a real external component instance matches an accepts list containing its own external identity');
+});

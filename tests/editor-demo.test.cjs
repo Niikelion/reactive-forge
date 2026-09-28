@@ -281,7 +281,7 @@ test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + 
     // --- exportToTsx on the SAME document: proves the "nodes"-item path DOES serialize an
     // external instance as real JSX (<Badge ... />), which is new coverage no existing fixture
     // exercised (tests/export.test.cjs's own external-identity coverage is componentRef-only). ---
-    const tsxSource = exportToTsx(doc, metadata);
+    const tsxSource = exportToTsx(doc, metadata, registry);
     assert.match(tsxSource, /<Badge\s*\/>/, 'the external Badge instance serializes as real JSX, not dropped or stubbed');
     assert.match(tsxSource, /import \{ Badge \} from/, 'an import statement naming Badge is generated for the external "nodes"-item instance');
 
@@ -333,7 +333,7 @@ test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + 
       const relative = path.relative(scratchDir, withoutExtension).replace(/\\/g, '/');
       return relative.startsWith('.') ? relative : `./${relative}`;
     };
-    const projectOnlyTsxSource = exportToTsx(projectOnlyDoc, metadata, { resolveImportPath });
+    const projectOnlyTsxSource = exportToTsx(projectOnlyDoc, metadata, registry, { resolveImportPath });
     const exportedFilePath = path.join(scratchDir, 'ExportedComposition.tsx');
     fs.writeFileSync(exportedFilePath, projectOnlyTsxSource, 'utf8');
 
