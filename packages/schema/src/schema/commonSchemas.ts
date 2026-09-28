@@ -16,6 +16,7 @@ import {ReactNodeSchema} from "@/schema/ReactNode";
 import {VoidSchema} from "@/schema/Void";
 import {UnionSchema} from "@/schema/Union";
 import {FunctionSchema} from "@/schema/Function";
+import {ComponentTypeSchema} from "@/schema/ComponentType";
 
 interface SchemaModule {
     fromJson: SchemaFactory
@@ -39,6 +40,7 @@ export const commonTypes: Record<string, SchemaModule> = {
     union: UnionSchema,
     void: VoidSchema,
     function: FunctionSchema,
+    componentType: ComponentTypeSchema,
 }
 
 let commonSchemasRegistered = false

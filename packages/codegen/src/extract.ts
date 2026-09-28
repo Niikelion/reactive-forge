@@ -300,7 +300,20 @@ function createUtils(project: Project, sourceDirectory: string)
 
         let type: Type
         try {
-            type = paramNode.getType()
+            // Prefer the *signature's own* (possibly generic-instantiated) parameter symbol,
+            // resolved at the parameter's own location, over `paramNode.getType()` directly.
+            // For a props type reached through a generic alias (e.g. `const Button: FC<ButtonProps>`,
+            // a very common component-declaration style - `FC`'s call signature's declaration node
+            // lives inside react's own generic `FunctionComponent<P>` interface), `paramNode` is
+            // that generic interface's own syntactic parameter node; asking for its type directly
+            // resolves the *unsubstituted* type parameter `P`, not `ButtonProps`. `signature`
+            // already carries the resolved/instantiated parameter (mirroring how this file's own
+            // typeToSchema already resolves function-typed prop parameters via
+            // `param.getTypeAtLocation(node)`, not `param.getType()`). Falls back to the direct
+            // form when the signature has no matching parameter symbol (e.g. a signature
+            // synthesized without one).
+            const signatureParam = calculateOrDefault(() => signature.getParameters()[0], undefined)
+            type = signatureParam ? signatureParam.getTypeAtLocation(paramNode) : paramNode.getType()
         } catch (error) {
             componentDiagnostics.push({
                 severity: "error",
@@ -592,6 +605,45 @@ function defaultName(symbol: Symbol): string {
 
 function matchesRoot(sourcePath: string, rootPath: string): boolean {
     return sourcePath === rootPath || sourcePath.startsWith(rootPath.endsWith("/") ? rootPath : `${rootPath}/`)
+}
+
+// Second, narrower entry point for external component identity resolution
+// (docs/slot-contract.md section 5, "Declaration-only exports"). Unlike
+// extractComponents, this is allowed to describe a declaration-only export
+// (a real `.d.ts`, `sourceFile.isDeclarationFile()` is true) because it
+// never touches isRuntimeDeclaration/the ordinary discovery loop above, and
+// a companion metadata package annotates a library's public type surface,
+// never its implementation. Runs the exact same typeToSchema/
+// extractComponentData pipeline used for project components. Returns null
+// when `exportName` cannot be found or has no usable call signature -
+// callers (annotations/external.ts) turn that into an
+// "external-export-missing" diagnostic; this function itself never throws
+// for a missing export.
+export function extractExternalComponentData(project: Project, dtsPath: string, exportName: string, isDefault: boolean): ComponentData | null {
+    const sourceFile = project.getSourceFile(dtsPath) ?? project.addSourceFileAtPathIfExists(dtsPath)
+    if (!sourceFile) return null
+
+    const publicSymbol = sourceFile.getExportSymbols().find(symbol => symbol.getName() === exportName)
+    if (!publicSymbol) return null
+
+    const symbol = resolvedSymbol(publicSymbol)
+    const declaration = symbol.getDeclarations()[0]
+    if (!declaration) return null
+
+    const utils = createUtils(project, path.dirname(sourceFile.getFilePath()))
+    try {
+        const signature = utils.getSignature(declaration)
+        return utils.extractComponentData(
+            signature,
+            declaration,
+            symbol,
+            exportName,
+            sourceFile.getFilePath().replace(/\\/g, "/"),
+            isDefault
+        )
+    } finally {
+        utils.dispose()
+    }
 }
 
 export function extractComponents(project: Project, componentRoots: string[]): ComponentData[] {

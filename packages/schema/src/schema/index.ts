@@ -8,6 +8,11 @@ export * from "./equality"
 export * from "./assignability"
 export * from "./ValueJson"
 export * from "./metadata"
+export * from "./ComponentIdentity"
+export * from "./RichText"
+export * from "./SlotPath"
+export * from "./SlotPolicy"
+export * from "./SlotCheck"
 export * from "./Null";
 export * from "./Never";
 export * from "./Unknown";
@@ -23,3 +28,4 @@ export * from "./ReactNode";
 export * from "./Void";
 export * from "./Union";
 export {FunctionSchema} from "@/schema/Function";
+export {ComponentTypeSchema} from "@/schema/ComponentType";

@@ -613,6 +613,7 @@ __metadata:
     "@reactive-forge/schema": "npm:1.0.0"
     "@types/node": "npm:>=22.13.4"
     "@types/prompts": "npm:^2.4.9"
+    "@types/semver": "npm:^7.5.8"
     commander: "npm:^13.1.0"
     dedent: "npm:^1.5.3"
     esbuild: "npm:^0.28.2"
@@ -620,6 +621,7 @@ __metadata:
     kleur: "npm:^4.1.5"
     load-config-ts: "npm:^0.1.0"
     prompts: "npm:^2.4.2"
+    semver: "npm:^7.6.3"
     ts-morph: "npm:>=25.0.1"
     ts-node: "npm:>=10.9.2"
     typescript: "npm:5.5.4"
@@ -896,6 +898,13 @@ __metadata:
   dependencies:
     csstype: "npm:^3.0.2"
   checksum: 10c0/4908772be6dc941df276931efeb0e781777fa76e4d5d12ff9f75eb2dcc2db3065e0100efde16fde562c5bafa310cc8f50c1ee40a22640459e066e72cd342143e
+  languageName: node
+  linkType: hard
+
+"@types/semver@npm:^7.5.8":
+  version: 7.8.0
+  resolution: "@types/semver@npm:7.8.0"
+  checksum: 10c0/46a1f38e36013448b279798e8b134e7e8de3b3630b1f40683903b9d57d36dd1d70838515570ed9a149fa09e9c381b9e39319b58d7b9f3b929b42ae2becff7aa3
   languageName: node
   linkType: hard
 
@@ -2676,6 +2685,15 @@ __metadata:
   bin:
     semver: bin/semver.js
   checksum: 10c0/fd603a6fb9c399c6054015433051bdbe7b99a940a8fb44b85c2b524c4004b023d7928d47cb22154f8d054ea7ee8597f586605e05b52047f048278e4ac56ae958
+  languageName: node
+  linkType: hard
+
+"semver@npm:^7.6.3":
+  version: 7.8.5
+  resolution: "semver@npm:7.8.5"
+  bin:
+    semver: bin/semver.js
+  checksum: 10c0/b1f3127a5be8125a94f37188b361c212466c292c6910adce3ec106cff5dc211ccaedc4739c11bb70fda59d6fc1f040a9bca289f4e093451521a2372e5231fe0c
   languageName: node
   linkType: hard
 
