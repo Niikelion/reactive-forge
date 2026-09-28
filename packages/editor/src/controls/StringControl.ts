@@ -17,7 +17,7 @@ export const StringControl: ControlComponent = (props) => {
         value: currentText(props),
         onChange: (event: {target: {value: string}}) => {
             const next = commitValue(schema, {type: "string", value: event.target.value})
-            onChange({kind: "value", value: next})
+            onChange({kind: "composed", value: {kind: "leaf", value: next}})
         }
     })
 }
@@ -38,7 +38,7 @@ export const ColorPickerStringControl: ControlComponent = (props) => {
         value,
         onChange: (event: {target: {value: string}}) => {
             const next = commitValue(schema, {type: "string", value: event.target.value})
-            onChange({kind: "value", value: next})
+            onChange({kind: "composed", value: {kind: "leaf", value: next}})
         }
     })
 }

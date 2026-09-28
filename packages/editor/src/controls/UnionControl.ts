@@ -23,9 +23,10 @@ function memberSchemas(schema: SchemaJson): SchemaJson[] {
 export const UnionControl: ControlComponent = (props) => {
     const {schema, currentValue, editorHints, callbacks, controls, onChange} = props
     const members = memberSchemas(schema)
-    const currentTag = currentValue?.kind === "value"
-        ? currentValue.value.type
-        : currentValue?.kind === "callback" ? "function" : undefined
+    const currentLeafType = currentValue?.kind === "composed" && currentValue.value.kind === "leaf"
+        ? currentValue.value.value.type
+        : undefined
+    const currentTag = currentLeafType ?? (currentValue?.kind === "callback" ? "function" : undefined)
     const [selected, setSelected] = useState<string>(currentTag ?? members[0]?.type ?? "unknown")
 
     const activeMember = members.find(m => m.type === selected) ?? members[0]
@@ -33,7 +34,7 @@ export const UnionControl: ControlComponent = (props) => {
 
     const Sub = pickControl(activeMember.type, editorHints, controls)
     const nestedCurrent =
-        (currentValue?.kind === "value" && currentValue.value.type === activeMember.type) ||
+        (currentLeafType === activeMember.type) ||
         (currentValue?.kind === "callback" && activeMember.type === "function")
             ? currentValue
             : undefined

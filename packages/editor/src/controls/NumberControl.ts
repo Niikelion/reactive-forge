@@ -16,7 +16,7 @@ export const NumberControl: ControlComponent = (props) => {
             const parsed = Number(event.target.value)
             if (Number.isNaN(parsed)) return
             const next = commitValue(schema, {type: "number", value: parsed})
-            onChange({kind: "value", value: next})
+            onChange({kind: "composed", value: {kind: "leaf", value: next}})
         }
     })
 }

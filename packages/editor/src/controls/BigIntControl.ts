@@ -22,7 +22,7 @@ export const BigIntControl: ControlComponent = (props) => {
             const text = event.target.value.trim()
             if (!/^-?\d+$/.test(text)) return
             const next = commitValue(schema, {type: "bigint", value: text})
-            onChange({kind: "value", value: next})
+            onChange({kind: "composed", value: {kind: "leaf", value: next}})
         }
     })
 }

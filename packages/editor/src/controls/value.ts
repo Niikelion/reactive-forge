@@ -11,6 +11,6 @@ import {ControlProps} from "./types.js"
  * slot currently holds a `"callback"` reference, which has no `ValueJson`).
  */
 export function resolveInitialValueJson(props: ControlProps): ValueJson | undefined {
-    if (props.currentValue?.kind === "value") return props.currentValue.value
+    if (props.currentValue?.kind === "composed" && props.currentValue.value.kind === "leaf") return props.currentValue.value.value
     return props.defaultValue ?? props.exampleValue
 }

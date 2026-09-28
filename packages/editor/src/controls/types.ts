@@ -1,14 +1,19 @@
 import {FC} from "react"
-import {CallbackRegistry} from "@reactive-forge/runtime"
+import {CallbackRegistry, CompositionPropValue} from "@reactive-forge/runtime"
 import {DefaultValueJson, Json, SchemaJson, ValueJson} from "@reactive-forge/schema"
 
-// Composition-document prop-value shape mirrors
-// packages/runtime/src/composition.ts's CompositionPropValue - re-declared
-// here (not imported) only to avoid a second import for a type this package
-// already re-exports; keep in sync if that contract ever changes.
-export type ControlPropValue =
-    | { kind: "value", value: ValueJson }
-    | { kind: "callback", name: string }
+// v3 (docs/slot-contract-recursive.md): a control's prop value is exactly a
+// `CompositionPropValue` (imported directly, not re-declared, so this type
+// can never drift out of sync with packages/runtime/src/composition.ts the
+// way a hand-copied duplicate could) - `{kind:"callback", name}` for a
+// function-typed prop, or `{kind:"composed", value: CompositionValue}` for
+// everything else. Every DEFAULT control here only ever reads/writes the
+// `{kind:"leaf", value: ValueJson}` case of `CompositionValue` (see
+// `resolveInitialValueJson`) - a "nodes"/"richText"/"componentRef"/"object"/
+// "array"/"variant" value at this position is slot-domain content, handled
+// by packages/editor/src/slots.ts's dedicated operations instead, never by
+// an ordinary `PropControl`.
+export type ControlPropValue = CompositionPropValue
 
 /**
  * The schema `type` tags a control can be registered against. Mirrors every

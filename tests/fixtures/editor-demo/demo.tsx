@@ -54,7 +54,7 @@ import {Badge as ExternalBadge} from "rf-demo-widgets"
 
 const METADATA_URL = "./out-demo/metadata.json"
 const BUNDLE_URL = "./out-demo/bundle.js"
-const STORAGE_KEY = "reactive-forge-editor-demo-composition-v2"
+const STORAGE_KEY = "reactive-forge-editor-demo-composition-v3"
 
 function findComponentMeta(metadata: MetadataDocument, name: string): ComponentMetadata {
     const found = metadata.components.find(c => c.name === name)
@@ -62,21 +62,34 @@ function findComponentMeta(metadata: MetadataDocument, name: string): ComponentM
     return found
 }
 
+// v3 (docs/slot-contract-recursive.md): schemaVersion 3, CompositionPropValue collapsed to
+// {kind:"callback"} / {kind:"composed", value: CompositionValue}. "actions" (SlotCard's
+// `ReactNode[]`) is a genuine DECLARED ARRAY with an each() per-entry policy (worked example 8.3)
+// - its own top-level CompositionValue is "array", not a flat "nodes" list, unlike "header"
+// (a bare `ReactNode`, which stays flat "nodes"). Starts empty; SlotOutlet's insert/remove/move
+// calls (via packages/editor/src/slots.ts) manage its shape from there.
 function buildInitialDocument(slotCardId: string, slotIconId: string): CompositionDocument {
     return {
-        schemaVersion: 2,
+        schemaVersion: 3,
         root: {
             kind: "instance",
             instanceId: "root",
             componentId: slotCardId,
             props: {
-                header: {kind: "nodes", value: {items: [{itemId: "h1", kind: "text", value: "Reactive Forge Demo"}]}},
-                actions: {kind: "nodes", value: {items: []}},
-                icon: {kind: "componentRef", value: {source: "project", id: slotIconId}},
-                caption: {kind: "richText", value: plainRichText("Edit me", false)}
+                header: {kind: "composed", value: {kind: "nodes", value: {items: [{itemId: "h1", kind: "text", value: "Reactive Forge Demo"}]}}},
+                actions: {kind: "composed", value: {kind: "array", items: []}},
+                icon: {kind: "composed", value: {kind: "componentRef", value: {source: "project", id: slotIconId}}},
+                caption: {kind: "composed", value: {kind: "richText", value: plainRichText("Edit me", false)}}
             }
         }
     }
+}
+
+// Flattens a declared-array per-entry prop's stored CompositionSlotItems back into a flat list for
+// display, mirroring exactly how packages/editor/src/slots.ts's own internal readSlotEntries reads
+// the "one entry = one node" case that insertSlotItem/moveSlotItem produce for this slot.
+function flattenArrayEntries(items: { itemId: string, value: { kind: string, value?: { items: CompositionSlotItem[] } } }[]): CompositionSlotItem[] {
+    return items.flatMap(entry => entry.value.kind === "nodes" && entry.value.value !== undefined ? entry.value.value.items : [])
 }
 
 interface LoadedLibrary {
@@ -344,10 +357,14 @@ function Editor({metadata, library}: LoadedLibrary) {
     const [exportError, setExportError] = useState("")
 
     const root = getInstanceAtPath(preview.document, [])
-    const headerItems = root.props.header?.kind === "nodes" ? root.props.header.value.items : []
-    const actionsItems = root.props.actions?.kind === "nodes" ? root.props.actions.value.items : []
-    const iconValue = root.props.icon?.kind === "componentRef" ? root.props.icon.value : {source: "project" as const, id: slotIconMeta.id}
-    const captionValue = root.props.caption?.kind === "richText" ? root.props.caption.value : plainRichText("", false)
+    const headerProp = root.props.header
+    const headerItems = headerProp?.kind === "composed" && headerProp.value.kind === "nodes" ? headerProp.value.value.items : []
+    const actionsProp = root.props.actions
+    const actionsItems = actionsProp?.kind === "composed" && actionsProp.value.kind === "array" ? flattenArrayEntries(actionsProp.value.items) : []
+    const iconProp = root.props.icon
+    const iconValue = iconProp?.kind === "composed" && iconProp.value.kind === "componentRef" ? iconProp.value.value : {source: "project" as const, id: slotIconMeta.id}
+    const captionProp = root.props.caption
+    const captionValue = captionProp?.kind === "composed" && captionProp.value.kind === "richText" ? captionProp.value.value : plainRichText("", false)
 
     function makeSlotOps(propName: "header" | "actions") {
         return {
