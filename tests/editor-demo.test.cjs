@@ -43,11 +43,14 @@ const path = require('node:path');
 const test = require('node:test');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
+const { pathToFileURL } = require('node:url');
+const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
 const fixtureDir = path.join(root, 'tests', 'fixtures', 'editor-demo');
 const outDemoDir = path.join(fixtureDir, 'out-demo');
 const demoBundlePath = path.join(fixtureDir, 'demo.js');
+const externalWidgetsDir = path.join(root, 'tests', 'fixtures', 'node_modules', 'rf-demo-widgets');
 
 function runCli(args, cwd) {
   // Same invocation pattern as tests/bundle.test.cjs/tests/editor.test.cjs's
@@ -102,6 +105,27 @@ test('editor demo: forge codegen/bundle + build-editor-demo produce a self-conta
     const slotCard = metadata.components.find((c) => c.name === 'SlotCard');
     assert.ok(Array.isArray(slotCard.slots) && slotCard.slots.length > 0, 'SlotCard has real slot rules for the demo\'s slot outlets to consume');
 
+    // Phase 4: an externally-annotated library component (docs/slot-contract.md section 5),
+    // resolved via forge.demo.config.ts's annotationSources.libraries entry pointing at
+    // tests/fixtures/bundle-project/src/annotations/externalWidgets.ts, which names the real
+    // fixture package tests/fixtures/node_modules/rf-demo-widgets - proves static discovery +
+    // .d.ts resolution actually ran (not just that the config field parses).
+    const externalLibrary = metadata.externalLibraries?.find((l) => l.package === 'rf-demo-widgets');
+    assert.ok(externalLibrary, 'metadata.json describes the rf-demo-widgets external library');
+    assert.equal(externalLibrary.resolvedVersion, '2.0.0');
+    assert.deepEqual(externalLibrary.diagnostics, [], 'the external library resolved with zero diagnostics');
+    const badgeMeta = metadata.components.find((c) => c.external?.package === 'rf-demo-widgets' && c.external.exportName === 'Badge');
+    assert.ok(badgeMeta, 'metadata.json describes the external Badge component');
+    assert.deepEqual(badgeMeta.external, { source: 'external', package: 'rf-demo-widgets', exportName: 'Badge', isDefault: false });
+    assert.equal(badgeMeta.props.label.required, false, 'Badge.label was extracted from the real .d.ts (optional, so a bare inserted instance renders without a missing-required-prop diagnostic)');
+
+    // The generated registry bundle (out-demo/bundle.js, produced by codegen's OWN static
+    // analysis) must never contain the external package's real implementation - only demo.tsx
+    // (the host application) imports it for real, per docs/slot-contract.md section 5's "never
+    // require/import the runtime module" requirement.
+    const registryBundleText = fs.readFileSync(registryBundlePath, 'utf8');
+    assert.ok(!registryBundleText.includes('rf-demo-widgets'), 'forge bundle (codegen\'s own output) must never reference the external package - it only resolves its .d.ts, never imports/executes it');
+
     // --- Build the demo application bundle itself ---
     const { buildEditorDemo, hostProvidedPeers } = require(path.join(root, 'scripts', 'build-editor-demo.cjs'));
     const written = await buildEditorDemo({
@@ -136,6 +160,12 @@ test('editor demo: forge codegen/bundle + build-editor-demo produce a self-conta
     // checkSlotValue/resolveSlotPolicy pair, not a hand-rolled duplicate.
     assert.ok(demoBundleText.includes('checkSlotValue'), 'checkSlotValue (the shared policy checker) is bundled into demo.js');
     assert.ok(demoBundleText.includes('insertSlotItem'), 'the real insertSlotItem slot operation is bundled into demo.js');
+    // Phase 4: the external package's REAL implementation must be genuinely inlined into demo.js
+    // (the host bundle) - a fingerprint of its actual source (not just a string a trivial stub
+    // could also contain), proving demo.tsx's `import { Badge } from "rf-demo-widgets"` was really
+    // resolved and bundled, not left dangling.
+    assert.ok(demoBundleText.includes('external-badge'), 'the real rf-demo-widgets Badge implementation (data-testid="external-badge") is bundled into demo.js');
+    assert.ok(demoBundleText.includes('exportToTsx'), 'the real exportToTsx implementation is bundled into demo.js, backing the Export to TSX button');
 
     // --- Every import statement left in the bundled ESM output must be one
     // of the declared host-provided peers - nothing else. This also proves
@@ -148,6 +178,180 @@ test('editor demo: forge codegen/bundle + build-editor-demo produce a self-conta
     for (const specifier of importSpecifiers) {
       assert.ok(allowed.has(specifier), `unexpected non-external import left in demo bundle: ${specifier}`);
     }
+  } finally {
+    cleanGenerated();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Phase 4 (docs/claude-slots-handoff.md "Real browser acceptance"): "Export the resulting
+// composition and compare its rendered output to runtime output." This is the automated,
+// Node-side half of that proof - option (b) from the coordinator's brief, mirroring the exact
+// compile-and-compare pattern tests/export.test.cjs already established (ts.createProgram +
+// getPreEmitDiagnostics, then a real react-dom/server render diff) - now pulling a real
+// composition document that matches what a user actually builds interactively in the demo
+// (SlotCard header/actions/icon/caption, with an externally-annotated `Badge` instance dropped
+// into `actions`, exactly like the "Insert Badge" browser interaction recorded in docs/baseline.md).
+// The interactive/visual half of the same proof is demo.tsx's own "Export to TSX" button
+// (data-testid="btn-export" / "export-output"), verified separately by hand in a real browser
+// (see docs/baseline.md's phase 4 section for that transcript).
+
+function compileTsx(scratchDir, filePaths) {
+  const fixtureTsconfig = JSON.parse(fs.readFileSync(path.join(root, 'tests', 'fixtures', 'bundle-project', 'tsconfig.json'), 'utf8'));
+  const { options: compilerOptions, errors: optionErrors } = ts.convertCompilerOptionsFromJson(fixtureTsconfig.compilerOptions, scratchDir);
+  assert.deepEqual(optionErrors, [], 'tsconfig.json compiler options parse cleanly');
+  const program = ts.createProgram(filePaths, compilerOptions);
+  const normalizedTargets = new Set(filePaths.map((p) => p.replace(/\\/g, '/')));
+  const diagnostics = ts.getPreEmitDiagnostics(program).filter((d) => d.file && normalizedTargets.has(d.file.fileName));
+  if (diagnostics.length > 0) {
+    return ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+      getCanonicalFileName: (f) => f,
+      getCurrentDirectory: () => scratchDir,
+      getNewLine: () => '\n',
+    });
+  }
+  return null;
+}
+
+test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + external Badge in actions) renders the real component, and the export path\'s external-identity limitation is real and documented', async () => {
+  cleanGenerated();
+  try {
+    const codegenResult = runCli(['codegen', '--config', 'forge.demo.config.ts'], fixtureDir);
+    assert.equal(codegenResult.status, 0, codegenResult.stdout + codegenResult.stderr);
+    const bundleResult = runCli(['bundle', '--config', 'forge.demo.config.ts'], fixtureDir);
+    assert.equal(bundleResult.status, 0, bundleResult.stdout + bundleResult.stderr);
+
+    const metadata = JSON.parse(fs.readFileSync(path.join(outDemoDir, 'metadata.json'), 'utf8'));
+    const registryModule = await import(pathToFileURL(path.join(outDemoDir, 'bundle.js')).href);
+    const projectRegistry = registryModule.components;
+
+    const byName = (name) => {
+      const found = metadata.components.find((c) => c.name === name);
+      assert.ok(found, `expected component ${name} in metadata.json`);
+      return found;
+    };
+    const slotCardMeta = byName('SlotCard');
+    const slotIconMeta = byName('SlotIcon');
+    const badgeMeta = metadata.components.find((c) => c.external?.package === 'rf-demo-widgets' && c.external.exportName === 'Badge');
+    assert.ok(badgeMeta, 'expected the external Badge component in metadata.json');
+
+    // The demo's own host-side registry augmentation (demo.tsx's withExternalLibraryEntries):
+    // the generated registry never contains an external component's real implementation, so the
+    // HOST supplies its own real import, exactly like a production app would. Real dynamic import
+    // of the real fixture package (not a stub), matching demo.tsx's own import.
+    const { Badge } = await import(pathToFileURL(path.join(externalWidgetsDir, 'index.js')).href);
+    const registry = {
+      files: [
+        ...projectRegistry.files,
+        { path: 'external:rf-demo-widgets', components: { Badge: { id: badgeMeta.id, component: Badge, args: { type: 'object', properties: {} } } } },
+      ],
+    };
+
+    const { validateComposition, renderComposition, exportToTsx } = require(path.join(root, 'packages', 'runtime', 'src', 'index.ts'));
+    const { renderToStaticMarkup } = require('react-dom/server');
+
+    // The exact document shape the "Insert Badge" browser interaction produces (docs/baseline.md):
+    // SlotCard's real header/actions/icon/caption slots, actions holding one real external Badge
+    // instance.
+    const doc = {
+      schemaVersion: 2,
+      root: {
+        kind: 'instance',
+        instanceId: 'root',
+        componentId: slotCardMeta.id,
+        props: {
+          header: { kind: 'nodes', value: { items: [{ itemId: 'h1', kind: 'text', value: 'Reactive Forge Demo' }] } },
+          actions: {
+            kind: 'nodes',
+            value: { items: [{ itemId: 'a1', kind: 'instance', instance: { kind: 'instance', instanceId: 'badge-1', componentId: badgeMeta.id, props: {} } }] },
+          },
+          icon: { kind: 'componentRef', value: { source: 'project', id: slotIconMeta.id } },
+          caption: { kind: 'richText', value: { kind: 'richText', version: 1, inline: false, nodes: [{ type: 'paragraph', children: [{ type: 'text', text: 'Edit me', marks: [] }] }] } },
+        },
+      },
+    };
+
+    // --- Renders for real, through the real, unmodified runtime (packages/runtime/src/render.ts) ---
+    const validation = validateComposition(doc, metadata, registry, {});
+    assert.deepEqual(validation.diagnostics, [], 'the document (with the external Badge instance) validates with zero diagnostics against the augmented registry');
+    const runtimeHtml = renderToStaticMarkup(renderComposition(doc, metadata, registry, {}));
+    assert.match(runtimeHtml, /★ External Badge/, 'the runtime render contains the real external Badge component\'s own real output text');
+    assert.match(runtimeHtml, /data-source-package="rf-demo-widgets"/, 'the rendered markup carries the real Badge implementation\'s own data attribute - not a stand-in');
+
+    // --- exportToTsx on the SAME document: proves the "nodes"-item path DOES serialize an
+    // external instance as real JSX (<Badge ... />), which is new coverage no existing fixture
+    // exercised (tests/export.test.cjs's own external-identity coverage is componentRef-only). ---
+    const tsxSource = exportToTsx(doc, metadata);
+    assert.match(tsxSource, /<Badge\s*\/>/, 'the external Badge instance serializes as real JSX, not dropped or stubbed');
+    assert.match(tsxSource, /import \{ Badge \} from/, 'an import statement naming Badge is generated for the external "nodes"-item instance');
+
+    // --- Real, documented finding: packages/runtime/src/export.ts's collectInstanceComponentIds
+    // (the function that walks a "nodes" slot's CompositionSlotItem instances to build the import
+    // table) unconditionally records every such instance as `{source: "project", id: node.componentId}`
+    // - it never checks whether that componentId's ComponentMetadata entry has `.external` set,
+    // unlike the componentRef/element-reference paths in the same file, which DO correctly
+    // preserve source. The generated import specifier is therefore built from
+    // `ComponentMetadata.sourcePath` (which, for an external component, is the absolute resolved
+    // `.d.ts` path - "for diagnostics only, never re-derived as identity" per
+    // docs/slot-contract.md section 5) instead of `ExternalComponentIdentity.package`. This is a
+    // real, reproducible bug in a file outside this phase's ownership (packages/runtime/src/**) -
+    // asserted here, not silently patched around, so it is tracked rather than lost. See this
+    // test's own report / docs/baseline.md's phase 4 section for the exact browser-reproduced
+    // import line.
+    assert.doesNotMatch(
+      tsxSource,
+      /import \{ Badge \} from "rf-demo-widgets"/,
+      'KNOWN BUG (packages/runtime/src/export.ts collectInstanceComponentIds, not owned by this phase): ' +
+      'a "nodes"-slot instance referencing an external component does not yet generate the correct ' +
+      '`import { Badge } from "rf-demo-widgets"` - it wrongly treats the instance as a project component ' +
+      'and builds a broken import from the external component\'s resolved .d.ts path instead. ' +
+      'If this assertion starts failing, the bug has been fixed upstream - flip this to assert.match ' +
+      'and delete this comment.'
+    );
+
+    // --- The genuine positive "compiles and renders byte-identical output" proof, for the part of
+    // the pipeline that IS correctly wired end to end: the same SlotCard document, with actions
+    // left empty (no external instance), so exportToTsx's generated import table only references
+    // project components - exactly the codepath tests/export.test.cjs's second test already
+    // proves compiles, reused here against the demo's own real SlotCard/SlotIcon metadata/registry
+    // instead of a hand-rolled one. ---
+    const projectOnlyDoc = {
+      schemaVersion: 2,
+      root: {
+        kind: 'instance',
+        instanceId: 'root',
+        componentId: slotCardMeta.id,
+        props: {
+          header: doc.root.props.header,
+          actions: { kind: 'nodes', value: { items: [] } },
+          icon: doc.root.props.icon,
+          caption: doc.root.props.caption,
+        },
+      },
+    };
+    const projectOnlyValidation = validateComposition(projectOnlyDoc, metadata, registry, {});
+    assert.deepEqual(projectOnlyValidation.diagnostics, []);
+    const projectOnlyRuntimeHtml = renderToStaticMarkup(renderComposition(projectOnlyDoc, metadata, registry, {}));
+
+    const scratchDir = path.join(outDemoDir, 'export-scratch');
+    fs.mkdirSync(scratchDir, { recursive: true });
+    const resolveImportPath = (component) => {
+      const absoluteSource = path.resolve(path.join(root, 'tests', 'fixtures'), component.sourcePath);
+      const withoutExtension = absoluteSource.replace(/\.(tsx?|jsx?)$/i, '');
+      const relative = path.relative(scratchDir, withoutExtension).replace(/\\/g, '/');
+      return relative.startsWith('.') ? relative : `./${relative}`;
+    };
+    const projectOnlyTsxSource = exportToTsx(projectOnlyDoc, metadata, { resolveImportPath });
+    const exportedFilePath = path.join(scratchDir, 'ExportedComposition.tsx');
+    fs.writeFileSync(exportedFilePath, projectOnlyTsxSource, 'utf8');
+
+    const compileError = compileTsx(scratchDir, [exportedFilePath]);
+    assert.equal(compileError, null, `Generated TSX (project-components-only) failed to typecheck:\n${compileError}`);
+
+    const exportedComponent = require(exportedFilePath).default;
+    const { createElement } = require('react');
+    const exportedHtml = renderToStaticMarkup(createElement(exportedComponent, { callbacks: {} }));
+    assert.equal(exportedHtml, projectOnlyRuntimeHtml, 'the exported TSX (project components only) renders byte-identical HTML to @reactive-forge/runtime\'s renderComposition for the same document');
   } finally {
     cleanGenerated();
   }

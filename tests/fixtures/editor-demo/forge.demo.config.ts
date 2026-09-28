@@ -33,5 +33,16 @@ export default {
 	// outlets (SlotCard's actions/icon/caption), which only exist in a schemaVersion 2
 	// metadata.json with colocated annotations turned on - mirrors
 	// tests/fixtures/bundle-project/forge.runtime-v2.config.ts/forge.editor.config.ts.
-	annotationSources: { colocated: true }
+	//
+	// Phase 4 addition: an externally-annotated library component (docs/slot-contract.md
+	// section 5), resolved via the companion module tests/fixtures/bundle-project/src/annotations/externalWidgets.ts,
+	// which names the real fixture package tests/fixtures/node_modules/rf-demo-widgets. Resolved
+	// relative to `rootDir` (this config's own `rootDir` is "../" = tests/fixtures), matching the
+	// annotationSources.libraries.metadataModule contract in packages/codegen/src/index.ts's fillConfig.
+	annotationSources: {
+		colocated: true,
+		libraries: [
+			{ package: "rf-demo-widgets", metadataModule: "./bundle-project/src/annotations/externalWidgets.ts" }
+		]
+	}
 } satisfies ForgeConfig

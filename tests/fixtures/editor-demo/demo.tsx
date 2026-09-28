@@ -37,8 +37,20 @@ import {
     toggleRichTextMark,
     useComponentPreview
 } from "@reactive-forge/editor"
+import {exportToTsx} from "@reactive-forge/runtime"
 import type {CompositionDocument, CompositionSlotItem, ValidationResult} from "@reactive-forge/runtime"
 import type {ComponentIdentity, ComponentLibraryData, ComponentMetadata, MetadataDocument, RichTextMark} from "@reactive-forge/schema"
+// Real import of a genuine third-party-style package (tests/fixtures/node_modules/rf-demo-widgets),
+// annotated externally via tests/fixtures/bundle-project/src/annotations/externalWidgets.ts and
+// discovered by codegen ONLY through its .d.ts (see forge.demo.config.ts's
+// annotationSources.libraries entry) - codegen/bundle.js never imports/executes this package's
+// real implementation (verified: bundle.js contains zero references to "rf-demo-widgets"). This
+// demo, as the HOST application, is the one place that actually imports the real component - the
+// same relationship a real production app has with its own copy of an annotated third-party UI
+// library. scripts/build-editor-demo.cjs bundles it directly into demo.js (it is not one of the
+// hostProvidedPeers, so esbuild inlines its real source, proving it was truly bundled in, not
+// left as an unresolved import).
+import {Badge as ExternalBadge} from "rf-demo-widgets"
 
 const METADATA_URL = "./out-demo/metadata.json"
 const BUNDLE_URL = "./out-demo/bundle.js"
@@ -72,6 +84,37 @@ interface LoadedLibrary {
     library: ComponentLibraryData
 }
 
+/**
+ * codegen's generated `ComponentLibraryData` (out-demo/bundle.js) only ever contains PROJECT
+ * components - it never imports an externally-annotated library's real implementation (that is
+ * the whole point of external annotation: codegen resolves identity/types from the `.d.ts` only,
+ * see docs/slot-contract.md section 5). The registry entry for an external component's real,
+ * renderable implementation is therefore this HOST application's own responsibility to supply -
+ * exactly like a real production app provides its own `import` of a third-party UI library
+ * alongside its generated project registry. This function does that: it finds the `Badge`
+ * component's real metadata entry (added to metadata.json by the `annotationSources.libraries`
+ * config, `external.package === "rf-demo-widgets"`) and appends one more `ComponentFileData` to
+ * the loaded library, keyed by the SAME stable `id` codegen computed for it - so
+ * `findComponentEntry`/`checkSlotValue`'s "any"-policy registry-membership check (both shared,
+ * unmodified `@reactive-forge/schema ` functions, docs/slot-contract.md section 8) resolve it
+ * exactly as they would a project component, with no parallel/duplicated lookup logic.
+ */
+function withExternalLibraryEntries(metadata: MetadataDocument, library: ComponentLibraryData): ComponentLibraryData {
+    const badgeMeta = metadata.components.find(c => c.external?.package === "rf-demo-widgets" && c.external.exportName === "Badge")
+    if (badgeMeta === undefined) return library
+    return {
+        files: [
+            ...library.files,
+            {
+                path: "external:rf-demo-widgets",
+                components: {
+                    Badge: {id: badgeMeta.id, component: ExternalBadge, args: {type: "object", properties: {}}}
+                }
+            }
+        ]
+    }
+}
+
 /** Fetches metadata.json and dynamically import()s bundle.js - the real generated gate-C artifacts, never a hand-rolled registry. */
 function useLoadedLibrary(): { state: LoadedLibrary | null, error: Error | null } {
     const [state, setState] = useState<LoadedLibrary | null>(null)
@@ -85,7 +128,8 @@ function useLoadedLibrary(): { state: LoadedLibrary | null, error: Error | null 
                 if (!metadataResponse.ok) throw new Error(`Could not fetch metadata.json: ${String(metadataResponse.status)}`)
                 const metadata = await metadataResponse.json() as MetadataDocument
                 const registryModule = await import(/* webpackIgnore: true */ BUNDLE_URL) as { components: ComponentLibraryData }
-                if (!cancelled) setState({metadata, library: registryModule.components})
+                const library = withExternalLibraryEntries(metadata, registryModule.components)
+                if (!cancelled) setState({metadata, library})
             } catch (e) {
                 if (!cancelled) setError(e instanceof Error ? e : new Error(String(e)))
             }
@@ -292,6 +336,8 @@ function Editor({metadata, library}: LoadedLibrary) {
 
     const [savedJson, setSavedJson] = useState("")
     const [reloadStatus, setReloadStatus] = useState("")
+    const [exportedTsx, setExportedTsx] = useState("")
+    const [exportError, setExportError] = useState("")
 
     const root = getInstanceAtPath(preview.document, [])
     const headerItems = root.props.header?.kind === "nodes" ? root.props.header.value.items : []
@@ -327,6 +373,38 @@ function Editor({metadata, library}: LoadedLibrary) {
             setReloadStatus("Reloaded from saved snapshot.")
         } catch (e) {
             setReloadStatus(`Reload failed: ${e instanceof Error ? e.message : String(e)}`)
+        }
+    }
+
+    /**
+     * Exports the demo's OWN current, live-edited composition document - the exact object
+     * `preview.document` holds right now, including whatever real edits/insertions/reorderings
+     * were just performed through the outlets above - via the real, unmodified
+     * `@reactive-forge/runtime` `exportToTsx` (packages/runtime/src/export.ts), against the same
+     * `metadata` this whole demo already loaded from out-demo/metadata.json. No hand-rolled export
+     * logic here: this is the identical function `tests/export.test.cjs` drives from Node, now
+     * wired to a real, visible browser affordance and a real, live document instead of a
+     * hand-constructed fixture one.
+     *
+     * Deliberately does NOT attempt to compile/render the exported source client-side (that would
+     * require shipping a TypeScript compiler into the browser bundle, which
+     * scripts/build-editor-demo.cjs's whole peer-externalization scheme exists to avoid, and which
+     * @reactive-forge/runtime's own "no compiler dependency" contract, docs/baseline.md's
+     * "Composition-to-TSX export (gate E)", forbids for the published runtime). The compiled +
+     * rendered-output comparison against the live runtime render is instead a real, automated
+     * Node-side proof in tests/editor-demo.test.cjs (ts.createProgram + getPreEmitDiagnostics, the
+     * same pattern tests/export.test.cjs already established) - this button is the interactive/
+     * visual half of that same proof: real generated source text, from the real live document,
+     * displayed for real inspection.
+     */
+    function handleExport() {
+        try {
+            const source = exportToTsx(preview.document, metadata)
+            setExportedTsx(source)
+            setExportError("")
+        } catch (e) {
+            setExportedTsx("")
+            setExportError(e instanceof Error ? e.message : String(e))
         }
     }
 
@@ -403,6 +481,13 @@ function Editor({metadata, library}: LoadedLibrary) {
                 <button type="button" data-testid="btn-reload" onClick={handleReload}>Reload from localStorage</button>
                 <div data-testid="reload-status">{reloadStatus}</div>
                 <textarea data-testid="save-textarea" readOnly rows={16} cols={70} value={savedJson} />
+            </section>
+
+            <section data-testid="export-section">
+                <h2>Export to TSX</h2>
+                <button type="button" data-testid="btn-export" onClick={handleExport}>Export to TSX</button>
+                {exportError !== "" && <div data-testid="export-error">Export failed: {exportError}</div>}
+                <pre data-testid="export-output">{exportedTsx}</pre>
             </section>
         </div>
     )
