@@ -411,6 +411,11 @@ function createUtils(project: Project, sourceDirectory: string)
         // triggers this - `FC<Props>` (used for the component's own outer signature elsewhere in
         // this file, never as a nested prop type in existing fixtures) is deliberately not treated
         // as componentType-domain here, matching the contract's exact wording.
+        //
+        // Known limitation (independent review): this checks the alias name only, not which module
+        // declared it. A project or third-party .d.ts that declares its own unrelated `type
+        // ComponentType<T>` would be misclassified the same way. Low real-world likelihood (the name
+        // is a strong, deliberate collision with React's own), not currently guarded against.
         if (type.getAliasSymbol()?.getName() === "ComponentType") {
             const [propsTypeArg] = type.getAliasTypeArguments()
             const propsSchema = propsTypeArg !== undefined
