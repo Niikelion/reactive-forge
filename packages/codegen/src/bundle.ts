@@ -30,18 +30,58 @@ import { Logger } from "./utils.js"
 // side-effect `import "./x.css"` reached from the entry point is collected
 // and written to a sibling `<bundleFileName minus .js>.css` file automatically
 // - no extra configuration needed, verified against a real fixture during
-// development (see docs/baseline.md "Portable bundle (gate C)"). Any other
-// static asset extension (`.svg`, `.png`, image/font imports, etc.) has no
-// loader configured here, so esbuild fails the whole build with its own
-// actionable per-file error ("No loader is configured for ... file
-// extension"), surfaced below with source context (see the catch block).
-// This is a diagnosed limitation, not a silent mishandling: nothing in this
-// file attempts to inline, copy, or drop unsupported assets, and no fixture
-// component in this gate exercises them, so that path is documented rather
-// than "proven".
+// development (see docs/baseline.md "Portable bundle (gate C)").
+//
+// Image/font assets: closing what was previously a documented gap here
+// ("no loader configured, esbuild fails the whole build"). `assetLoaders`
+// below maps the common image (`.svg`, `.png`, `.jpg`/`.jpeg`, `.gif`,
+// `.webp`) and font (`.woff`, `.woff2`, `.ttf`, `.otf`, `.eot`) extensions to
+// esbuild's `"file"` loader, not `"dataurl"`. Reasoning: per
+// docs/claude-handoff.md's Goal section, this bundle is not trying to
+// minimize its own size or promise that pure component functions get
+// isolated from their reachable dependencies - an asset-heavy bundle is
+// expected and fine. `"dataurl"` would inline every asset as base64 directly
+// inside bundle.js (and inside bundle.css for CSS-referenced assets, e.g.
+// `@font-face { src: url(...) }` or a `background-image` url()), which grows
+// the *text* size of files a host has to download/parse even when it only
+// needs some of the components in the registry, and base64 inflates binary
+// payloads ~33%. `"file"` instead copies each asset next to bundle.js under
+// a content-hashed name (esbuild's default `assetNames`) and rewrites every
+// reference - both plain `import x from "./logo.svg"` and CSS `url(...)` -
+// to a relative path pointing at that copy. Verified directly against
+// esbuild 0.28.2 during development (not assumed from the docs): CSS
+// `url()` references are automatically rewritten to the hashed asset
+// filename by esbuild's own CSS loader once `.woff2`/`.svg` are configured
+// as `"file"`, with no extra plugin. No extension in `assetLoaders` uses
+// `"dataurl"`; if a future caller wants inlining for a specific
+// size-sensitive case (e.g. a tiny icon font), that would need a per-call
+// override this module doesn't currently expose.
+//
+// outfile vs outdir: `"file"`-loader output was confirmed (via a throwaway
+// esbuild script during development) to work under esbuild's single-file
+// `outfile` mode exactly as it does under `outdir` mode - esbuild writes
+// the extra asset files into `outfile`'s own directory and rewrites
+// references relative to it. `bundleLibrary` therefore keeps using
+// `outfile`; existing callers' `bundle.js` path/name behavior is unchanged.
 export interface BundleConfig {
     outDir: string
     bundleFileName?: string
+}
+
+// esbuild's own loader identifiers - see the module doc comment above for
+// why every entry here is "file", not "dataurl".
+const assetLoaders: Record<string, "file"> = {
+    ".svg": "file",
+    ".png": "file",
+    ".jpg": "file",
+    ".jpeg": "file",
+    ".gif": "file",
+    ".webp": "file",
+    ".woff": "file",
+    ".woff2": "file",
+    ".ttf": "file",
+    ".otf": "file",
+    ".eot": "file",
 }
 
 // React/ReactDOM plus their common browser ESM subpaths. Marking these
@@ -67,8 +107,9 @@ export async function bundleLibrary({ outDir, bundleFileName = "bundle.js" }: Bu
         throw new Error(`No generated registry found at ${entry}. Run "forge codegen" before "forge bundle".`)
     }
 
+    let metafile: esbuild.Metafile
     try {
-        await esbuild.build({
+        const result = await esbuild.build({
             entryPoints: [entry],
             outfile,
             bundle: true,
@@ -85,9 +126,17 @@ export async function bundleLibrary({ outDir, bundleFileName = "bundle.js" }: Bu
             // here means `forge bundle` behaves the same regardless.
             jsx: "automatic",
             external: hostProvidedPeers,
+            loader: assetLoaders,
             write: true,
+            // Needed to enumerate every file esbuild actually wrote (bundle.js,
+            // the optional CSS sibling, and now any "file"-loader asset
+            // copies) so bundleLibrary can report/return them - see the
+            // metafile.outputs walk below, which replaces the old
+            // CSS-only `fs.access` probe.
+            metafile: true,
             logLevel: "silent",
         })
+        metafile = result.metafile
     } catch (error) {
         // esbuild's BuildFailure already carries actionable, file/line-level
         // messages (this is exactly where an unsupported `.css`/asset import
@@ -106,6 +155,21 @@ export async function bundleLibrary({ outDir, bundleFileName = "bundle.js" }: Bu
         logger.info(`Also wrote ${path.relative(process.cwd(), cssFile)} (CSS reached from component imports)`, true)
     } catch {
         // No CSS was reached from the entry point; nothing to report.
+    }
+
+    // Asset files written by the "file" loader (see assetLoaders above) -
+    // e.g. a component's `import logo from "./logo.svg"`, or a CSS
+    // `url(...)` esbuild's CSS loader rewrote to point at a copied font/image.
+    // These land in the same directory as `outfile` under a content-hashed
+    // name esbuild chooses; a caller/host needs to know they exist the same
+    // way it already needs to know about the CSS sibling above, so they're
+    // walked out of the real `metafile.outputs` (every file esbuild actually
+    // wrote for this build) rather than re-derived by guessing a naming
+    // pattern.
+    for (const rawOutputPath of Object.keys(metafile.outputs)) {
+        const outputPath = path.resolve(rawOutputPath)
+        if (outputPath === outfile || outputPath === cssFile) continue
+        logger.info(`Also wrote ${path.relative(process.cwd(), outputPath)} (static asset reached from component imports)`, true)
     }
 
     return outfile
