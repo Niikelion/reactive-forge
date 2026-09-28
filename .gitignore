@@ -15,4 +15,7 @@ tsconfig.tsbuildinfo
 .claude
 .codex
 tests/fixtures/cli-project/out
+tests/fixtures/editor-demo/out-demo
+tests/fixtures/editor-demo/demo.js
+tests/fixtures/editor-demo/demo.js.map
 docs/

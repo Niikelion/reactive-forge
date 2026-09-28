@@ -1,0 +1,36 @@
+<!doctype html>
+<!--
+  Interactive composition-editor demo (docs/claude-handoff.md gate D
+  acceptance line, made real and interactive in a browser - see
+  docs/baseline.md "Interactive browser verification"). Modeled directly on
+  tests/fixtures/independent-host/index.html's "genuinely decoupled,
+  servable as static files" bar: static files, no build step of its own
+  beyond what already produced ./out-demo/{bundle.js,metadata.json} (forge
+  codegen + forge bundle) and ./demo.js (scripts/build-editor-demo.cjs).
+
+  React/ReactDOM are supplied by the host via an import map pointing at the
+  same esm.sh CDN build tests/fixtures/independent-host/index.html uses -
+  same versions, same `?external=react` trick - so this page's demo.js
+  bundle and any future page sharing the same import map never load two
+  separate React instances.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Reactive Forge composition editor demo</title>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@19.3.0",
+    "react/jsx-runtime": "https://esm.sh/react@19.3.0/jsx-runtime",
+    "react-dom": "https://esm.sh/react-dom@19.3.0?external=react",
+    "react-dom/client": "https://esm.sh/react-dom@19.3.0/client?external=react"
+  }
+}
+</script>
+</head>
+<body>
+<div id="root">not rendered yet</div>
+<script type="module" src="./demo.js"></script>
+</body>
+</html>
