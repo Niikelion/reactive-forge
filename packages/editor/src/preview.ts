@@ -3,8 +3,8 @@ import {
     CallbackRegistry,
     CompositionDocument,
     CompositionInstance,
-    CompositionNode,
     CompositionPropValue,
+    CompositionSlotItem,
     CompositionValidationError,
     renderComposition,
     ValidationResult,
@@ -16,78 +16,109 @@ import {ComponentLibraryData, MetadataDocument} from "@reactive-forge/schema"
 // adapters: consume the same metadata/runtime and provide replaceable prop
 // controls"). This module is deliberately split into:
 //
-//  - pure, framework-agnostic helpers (`getNodeAtPath`, `setPropAtPath`,
-//    `computePreviewState`) that own no React state and can be unit-tested
-//    directly, without a DOM/renderer - see tests/editor.test.cjs; and
+//  - pure, framework-agnostic helpers (`getInstanceAtPath`, `setPropAtPath`,
+//    `computePreviewState`, plus the slot operations in slots.ts) that own no
+//    React state and can be unit-tested directly, without a DOM/renderer -
+//    see tests/editor.test.cjs; and
 //  - `useComponentPreview`, a thin React hook built on top of them.
 //
-// State-ownership judgment call (handoff explicitly asks for one): the hook
-// owns the `CompositionDocument` in React state internally (`useState`),
-// rather than requiring a controlled `document`/`onChange` pair from the
-// caller. This gate's acceptance bar is a *small worked example* proving
-// "edit props, nest components, save/reload, render equivalent output" -
-// internal ownership keeps that example's call site to a few lines. A
-// controlled variant is more flexible for a real multi-panel editor (undo
-// stacks, syncing with other UI), but adds boilerplate this gate doesn't
-// need; `setDocument` is still exposed on the returned handle so a caller
-// *can* replace the whole document from outside (e.g. after a "reload from
-// disk" action), which covers the save/reload half of the acceptance bar
-// without requiring full controlled-component plumbing.
+// ADDRESSING (phase 3 redesign): v1's `CompositionPath` was a plain array of
+// child indices (`[0, 1]` = root's first child's second child). The v2
+// composition document contract explicitly retired that scheme - a v2
+// document has no sibling `children` array at all, and the contract's own
+// stated reason for `instanceId`/`itemId` existing is that "child-index
+// addressing is unsuitable as persistent drag/edit identity after array
+// reordering" (docs/slot-contract.md's framing, restated in the phase-3
+// handoff). `InstancePath` replaces it with a chain of stable ids: each step
+// says "descend into the `"nodes"` slot at prop `propName`, then into the
+// item whose `itemId` is `itemId`" - reordering that slot's `items` array
+// never invalidates a path built this way, since it re-resolves by id, not
+// position. `[]` still addresses the document root.
+export interface InstancePathStep {
+    propName: string
+    itemId: string
+}
+
+export type InstancePath = InstancePathStep[]
+
+function slotValueOf(instance: CompositionInstance, propName: string): CompositionSlotItem[] {
+    const prop = instance.props[propName]
+    if (prop === undefined || prop.kind !== "nodes")
+        throw new Error(`Prop "${propName}" is not a "nodes"-kind slot on instance "${instance.instanceId}"`)
+    return prop.value.items
+}
 
 /**
- * Identifies one `CompositionInstance` inside a document by the sequence of
- * child indices from the root (`[]` is the root itself, `[0]` is the root's
- * first child, `[0, 1]` that child's second child, etc). Kept as a plain
- * array of numbers - not a node identity/id - because `CompositionInstance`
- * has no stable per-node id of its own (only component-level ids); a path is
- * the only addressing scheme the composition document contract supports.
+ * Looks up the `CompositionInstance` at `path` inside `doc`, resolving each step by
+ * `itemId` inside the named slot rather than by array position. Throws if a step's
+ * `propName` is not a `"nodes"` slot on the current instance, or if no item with that
+ * `itemId` (of kind `"instance"`) exists in it - a programming error in the caller
+ * (e.g. addressing an item that was since removed), not a validation concern.
  */
-export type CompositionPath = number[]
-
-/**
- * Looks up the `CompositionInstance` at `path` inside `doc`. Throws if the
- * path does not resolve to an instance (out of range, or resolves to a text/
- * void leaf) - a programming error in the caller, not a validation concern.
- */
-export function getNodeAtPath(doc: CompositionDocument, path: CompositionPath): CompositionInstance {
-    let node: CompositionNode = doc.root
-    for (const index of path) {
-        if (node.kind !== "instance") throw new Error(`Path ${JSON.stringify(path)} does not resolve to an instance: ancestor is a "${node.kind}" leaf`)
-        const children: CompositionNode[] = node.children ?? []
-        const child: CompositionNode | undefined = children[index]
-        if (child === undefined) throw new Error(`Path ${JSON.stringify(path)} is out of range: no child at index ${String(index)}`)
-        node = child
+export function getInstanceAtPath(doc: CompositionDocument, path: InstancePath): CompositionInstance {
+    let node: CompositionInstance = doc.root
+    for (const step of path) {
+        const items = slotValueOf(node, step.propName)
+        const item = items.find(i => i.itemId === step.itemId)
+        if (item === undefined)
+            throw new Error(`No item with itemId "${step.itemId}" in slot "${step.propName}"`)
+        if (item.kind !== "instance")
+            throw new Error(`Item "${step.itemId}" in slot "${step.propName}" is a "${item.kind}" leaf, not an instance`)
+        node = item.instance
     }
-    if (node.kind !== "instance") throw new Error(`Path ${JSON.stringify(path)} does not resolve to an instance, found a "${node.kind}" leaf`)
     return node
+}
+
+/** Back-compat alias kept for call sites/tests migrating from the v1 name. */
+export const getNodeAtPath = getInstanceAtPath
+
+/**
+ * Returns a new `CompositionDocument` with the instance at `path` replaced by
+ * `rewrite(currentInstance)`, leaving everything else structurally shared (only the
+ * spine from the root down to `path` is copied). Never mutates `doc`. The building
+ * block every other document-editing helper (`setPropAtPath`, and the slot operations
+ * in slots.ts) is implemented on top of.
+ */
+export function updateInstanceAtPath(
+    doc: CompositionDocument,
+    path: InstancePath,
+    rewrite: (instance: CompositionInstance) => CompositionInstance
+): CompositionDocument {
+    function go(node: CompositionInstance, remaining: InstancePath): CompositionInstance {
+        if (remaining.length === 0) return rewrite(node)
+        const [step, ...rest] = remaining as [InstancePathStep, ...InstancePath]
+        const items = slotValueOf(node, step.propName)
+        const index = items.findIndex(i => i.itemId === step.itemId)
+        if (index === -1)
+            throw new Error(`No item with itemId "${step.itemId}" in slot "${step.propName}"`)
+        const target = items[index]
+        if (target === undefined || target.kind !== "instance")
+            throw new Error(`Item "${step.itemId}" in slot "${step.propName}" is not an instance`)
+        const nextItems = items.slice()
+        nextItems[index] = {...target, instance: go(target.instance, rest)}
+        return {
+            ...node,
+            props: {
+                ...node.props,
+                [step.propName]: {kind: "nodes", value: {items: nextItems}}
+            }
+        }
+    }
+    return {...doc, root: go(doc.root, path)}
 }
 
 /**
  * Returns a new `CompositionDocument` with the prop `propName` on the
  * instance at `path` set to `value`, leaving everything else structurally
- * shared (only the spine from the root down to `path` is copied). Never
- * mutates `doc`.
+ * shared. Never mutates `doc`.
  */
 export function setPropAtPath(
     doc: CompositionDocument,
-    path: CompositionPath,
+    path: InstancePath,
     propName: string,
     value: CompositionPropValue
 ): CompositionDocument {
-    function rewrite(node: CompositionInstance, remaining: CompositionPath): CompositionInstance {
-        if (remaining.length === 0) {
-            return {...node, props: {...node.props, [propName]: value}}
-        }
-        const [index, ...rest] = remaining as [number, ...number[]]
-        const children = node.children ?? []
-        const target = children[index]
-        if (target === undefined || target.kind !== "instance")
-            throw new Error(`Path ${JSON.stringify(path)} is out of range or does not resolve to an instance`)
-        const nextChildren = children.slice()
-        nextChildren[index] = rewrite(target, rest)
-        return {...node, children: nextChildren}
-    }
-    return {...doc, root: rewrite(doc.root, path)}
+    return updateInstanceAtPath(doc, path, instance => ({...instance, props: {...instance.props, [propName]: value}}))
 }
 
 export interface PreviewState {
@@ -136,7 +167,7 @@ export interface UseComponentPreviewOptions {
     /** Host-supplied named callback bindings; see `CallbackRegistry` in `@reactive-forge/runtime`. */
     callbacks?: CallbackRegistry
     /** Which instance prop edits target; defaults to the document root (`[]`). */
-    targetPath?: CompositionPath
+    targetPath?: InstancePath
 }
 
 export interface ComponentPreviewHandle {
@@ -177,7 +208,7 @@ export function useComponentPreview(options: UseComponentPreviewOptions): Compon
         // eslint-disable-next-line react-hooks/exhaustive-deps -- `path` is derived per-render from `targetPath`; re-created array identity would defeat memoization for no benefit since it's read, not compared.
     }, [JSON.stringify(path)])
 
-    const targetNode = getNodeAtPath(document, path)
+    const targetNode = getInstanceAtPath(document, path)
 
     return {
         document,

@@ -92,10 +92,15 @@ test('editor demo: forge codegen/bundle + build-editor-demo produce a self-conta
     assert.ok(fs.existsSync(metadataPath), 'forge codegen produced out-demo/metadata.json');
 
     const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-    assert.equal(metadata.schemaVersion, 1);
-    for (const name of ['Card', 'Greeter']) {
+    // Phase 3: forge.demo.config.ts now sets annotationSources.colocated: true so the demo
+    // gets a real schemaVersion 2 metadata.json with SlotCard's real slot rules (see
+    // demo.tsx's slot outlets: actions/icon/caption).
+    assert.equal(metadata.schemaVersion, 2);
+    for (const name of ['SlotCard', 'SlotIcon']) {
       assert.ok(metadata.components.some((c) => c.name === name), `metadata.json describes ${name}, which demo.tsx depends on`);
     }
+    const slotCard = metadata.components.find((c) => c.name === 'SlotCard');
+    assert.ok(Array.isArray(slotCard.slots) && slotCard.slots.length > 0, 'SlotCard has real slot rules for the demo\'s slot outlets to consume');
 
     // --- Build the demo application bundle itself ---
     const { buildEditorDemo, hostProvidedPeers } = require(path.join(root, 'scripts', 'build-editor-demo.cjs'));
@@ -126,6 +131,11 @@ test('editor demo: forge codegen/bundle + build-editor-demo produce a self-conta
     // trivial "does the file exist" check could pass by accident).
     assert.ok(demoBundleText.includes('useComponentPreview'), 'the real useComponentPreview implementation is bundled into demo.js');
     assert.ok(demoBundleText.includes('renderComposition'), 'the real renderComposition implementation is bundled into demo.js');
+    // Phase 3: the slot-outlet code path (packages/editor/src/slots.ts) must be bundled in too -
+    // proves the demo's palette filtering/drop acceptance really calls the shared
+    // checkSlotValue/resolveSlotPolicy pair, not a hand-rolled duplicate.
+    assert.ok(demoBundleText.includes('checkSlotValue'), 'checkSlotValue (the shared policy checker) is bundled into demo.js');
+    assert.ok(demoBundleText.includes('insertSlotItem'), 'the real insertSlotItem slot operation is bundled into demo.js');
 
     // --- Every import statement left in the bundled ESM output must be one
     // of the declared host-provided peers - nothing else. This also proves

@@ -1,15 +1,26 @@
-// Gate D, part 2 (docs/claude-handoff.md section D): "add the preview hook
-// and replaceable schema-driven controls", proving the full acceptance bar
-// for the whole gate: "a small example edits props, nests components,
-// saves/reloads a composition, and renders equivalent output. Runtime works
-// independently of the editor."
+// Gate D, part 2 (docs/claude-handoff.md section D) + phase 3 slot outlets
+// (docs/claude-slots-handoff.md): "add the preview hook and replaceable
+// schema-driven controls", proving the full acceptance bar for the whole
+// gate: "a small example edits props, nests components, saves/reloads a
+// composition, and renders equivalent output. Runtime works independently of
+// the editor." Phase 3 extends this with real slot-outlet operations
+// (insertion/rejection/reordering/richText/componentRef), all going through
+// the SAME `checkSlotValue`/`resolveSlotPolicy` pair `packages/runtime`'s own
+// validation uses (docs/slot-contract.md section 8) - see packages/editor/src/slots.ts.
+//
+// Documents in this file are v2-shaped (`schemaVersion: 2`,
+// `CompositionInstance.instanceId`/`componentId`, `CompositionSlotItem[]`
+// slot values) - migrated from the v1 shape this file used before phase 3,
+// matching the pattern tests/runtime-v2.test.cjs already established for the
+// bare runtime.
 //
 // Reuses the exact real-bundle-plus-metadata pipeline tests/runtime.test.cjs
 // already proves (`forge codegen` then `forge bundle` against
 // tests/fixtures/bundle-project/, via its own forge.editor.config.ts/
-// out-editor to avoid racing other test files' output directories), then
-// drives @reactive-forge/editor (packages/editor/src) on top of the real
-// generated bundle.js + metadata.json.
+// out-editor to avoid racing other test files' output directories - now with
+// `annotationSources.colocated: true` so SlotCard's real slot rules come
+// through), then drives @reactive-forge/editor (packages/editor/src) on top
+// of the real generated bundle.js + metadata.json.
 //
 // No jsdom/react-test-renderer is available in this repo (see
 // docs/baseline.md, "Runtime (gate D, part 1)" for the same constraint on
@@ -17,12 +28,16 @@
 // event without one. Per the handoff's explicit permission to use judgment
 // here: this test exercises the hook's pure update/re-render core directly -
 // `setPropAtPath` (the exact function `useComponentPreview`'s `updateProp`
-// calls) and `computePreviewState` (the exact function the hook re-runs on
-// every document change) - and separately proves a control's *commit* path
-// (`commitValue`, which every default control's onChange handler calls
-// before producing a new prop value) end to end. `renderToStaticMarkup` is
-// still used to prove the hook + controls compose into real markup for a
-// single static render (a valid, non-interactive React render pass).
+// calls), `computePreviewState` (the exact function the hook re-runs on
+// every document change), and every pure slot operation in slots.ts - and
+// separately proves a control's *commit* path (`commitValue`, which every
+// default control's onChange handler calls before producing a new prop
+// value) end to end. `renderToStaticMarkup` is still used to prove the hook +
+// controls compose into real markup for a single static render (a valid,
+// non-interactive React render pass). Real DOM/click-driven interaction is
+// covered separately in the browser demo (tests/fixtures/editor-demo/,
+// tests/editor-demo.test.cjs, and docs/baseline.md's "Editor slot outlets"
+// section, verified through the Browser pane tool).
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const test = require('node:test');
@@ -59,45 +74,64 @@ function cleanFixtureOutput() {
   fs.rmSync(target, { recursive: true, force: true });
 }
 
-test('editor adapter: preview hook + default controls edit props, nest components, save/reload, and match bare runtime output', async () => {
+async function buildFixture() {
   cleanFixtureOutput();
+  const codegenResult = runCli(['codegen', '--config', 'forge.editor.config.ts'], fixtureProject);
+  assert.equal(codegenResult.status, 0, codegenResult.stdout + codegenResult.stderr);
+  const bundleResult = runCli(['bundle', '--config', 'forge.editor.config.ts'], fixtureProject);
+  assert.equal(bundleResult.status, 0, bundleResult.stdout + bundleResult.stderr);
+
+  const bundlePath = path.join(fixtureOutDir, 'bundle.js');
+  const metadataPath = path.join(fixtureOutDir, 'metadata.json');
+  const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+  const registry = (await import(pathToFileURL(bundlePath).href)).components;
+  return { metadata, registry };
+}
+
+function byName(metadata, name) {
+  const found = metadata.components.find((c) => c.name === name);
+  assert.ok(found, `expected component ${name} in metadata.json`);
+  return found;
+}
+
+test('editor adapter: preview hook + default controls edit props, nest components, save/reload, and match bare runtime output', async () => {
+  const { metadata, registry } = await buildFixture();
   try {
-    const codegenResult = runCli(['codegen', '--config', 'forge.editor.config.ts'], fixtureProject);
-    assert.equal(codegenResult.status, 0, codegenResult.stdout + codegenResult.stderr);
-    const bundleResult = runCli(['bundle', '--config', 'forge.editor.config.ts'], fixtureProject);
-    assert.equal(bundleResult.status, 0, bundleResult.stdout + bundleResult.stderr);
+    const cardMeta = byName(metadata, 'Card');
+    const greeterMeta = byName(metadata, 'Greeter');
 
-    const bundlePath = path.join(fixtureOutDir, 'bundle.js');
-    const metadataPath = path.join(fixtureOutDir, 'metadata.json');
-    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-    const registry = (await import(pathToFileURL(bundlePath).href)).components;
-
-    const cardMeta = metadata.components.find(c => c.name === 'Card');
-    const greeterMeta = metadata.components.find(c => c.name === 'Greeter');
-    assert.ok(cardMeta, 'metadata.json describes Card');
-    assert.ok(greeterMeta, 'metadata.json describes Greeter');
-
-    // --- Build a nested composition: Card wrapping Greeter as a child, a
-    // callback-reference prop, exactly like tests/runtime.test.cjs's document. ---
+    // --- Build a nested v2 composition: Card wrapping Greeter as a "children" nodes-slot
+    // item, a callback-reference prop - exactly like tests/runtime-v2.test.cjs's document. ---
     const initialDoc = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       root: {
         kind: 'instance',
-        id: cardMeta.id,
+        instanceId: 'card-1',
+        componentId: cardMeta.id,
         props: {
           title: { kind: 'value', value: { type: 'string', value: 'Greetings' } },
           onRender: { kind: 'callback', name: 'onCardRender' },
-        },
-        children: [
-          {
-            kind: 'instance',
-            id: greeterMeta.id,
-            props: {
-              name: { kind: 'value', value: { type: 'string', value: 'Composed Host' } },
-              times: { kind: 'value', value: { type: 'number', value: 1 } },
+          children: {
+            kind: 'nodes',
+            value: {
+              items: [
+                {
+                  itemId: 'child-1',
+                  kind: 'instance',
+                  instance: {
+                    kind: 'instance',
+                    instanceId: 'greeter-1',
+                    componentId: greeterMeta.id,
+                    props: {
+                      name: { kind: 'value', value: { type: 'string', value: 'Composed Host' } },
+                      times: { kind: 'value', value: { type: 'number', value: 1 } },
+                    },
+                  },
+                },
+              ],
             },
           },
-        ],
+        },
       },
     };
     const renderCalls = [];
@@ -129,11 +163,13 @@ test('editor adapter: preview hook + default controls edit props, nest component
     assert.throws(() => editor.commitValue(nameSchema, { type: 'number', value: 1 }));
 
     // --- Apply the edit via setPropAtPath - the exact function
-    // useComponentPreview's `updateProp` calls - targeting the nested
-    // Greeter instance (path [0]: Card's first child). ---
-    const editedDoc = editor.setPropAtPath(initialDoc, [0], 'name', { kind: 'value', value: committedName });
+    // useComponentPreview's `updateProp` calls - targeting the nested Greeter
+    // instance by id-based InstancePath: [{propName: "children", itemId: "child-1"}]. ---
+    const greeterPath = [{ propName: 'children', itemId: 'child-1' }];
+    assert.deepEqual(editor.getInstanceAtPath(initialDoc, greeterPath).instanceId, 'greeter-1');
+    const editedDoc = editor.setPropAtPath(initialDoc, greeterPath, 'name', { kind: 'value', value: committedName });
     assert.notDeepEqual(editedDoc, initialDoc, 'setPropAtPath does not mutate the original document');
-    assert.deepEqual(editor.getNodeAtPath(editedDoc, [0]).props.name.value, committedName);
+    assert.deepEqual(editor.getInstanceAtPath(editedDoc, greeterPath).props.name.value, committedName);
 
     const editedState = editor.computePreviewState(editedDoc, metadata, registry, callbacks);
     assert.equal(editedState.validation.valid, true, JSON.stringify(editedState.validation.diagnostics));
@@ -184,7 +220,7 @@ test('editor adapter: preview hook + default controls edit props, nest component
     }
 
     // --- Save/reload: plain JSON round trip must render identically,
-    // exactly like tests/runtime.test.cjs proves for the bare runtime. ---
+    // exactly like tests/runtime-v2.test.cjs proves for the bare runtime. ---
     const reloaded = JSON.parse(JSON.stringify(editedDoc));
     assert.deepEqual(reloaded, editedDoc);
     const reloadedState = editor.computePreviewState(reloaded, metadata, registry, callbacks);
@@ -198,6 +234,183 @@ test('editor adapter: preview hook + default controls edit props, nest component
     const bareElement = runtime.renderComposition(reloaded, metadata, registry, { callbacks });
     const bareHtml = renderToStaticMarkup(bareElement);
     assert.equal(bareHtml, htmlAfterReload, 'bare @reactive-forge/runtime renders the exact same document to the exact same output the editor package produced');
+
+    // --- A v1 document is refused outright by computePreviewState's underlying validateComposition
+    // (this is the compile-break floor this phase-3 change fixes: preview.ts no longer builds/
+    // consumes v1-shaped documents at all - a caller handing one in gets the real "unsupported-
+    // schema-version" diagnostic, not silently-wrong output). ---
+    const v1Doc = { schemaVersion: 1, root: { kind: 'instance', id: cardMeta.id, props: {} } };
+    const v1State = editor.computePreviewState(v1Doc, metadata, registry, callbacks);
+    assert.equal(v1State.validation.valid, false);
+    assert.ok(v1State.validation.diagnostics.some((d) => d.code === 'unsupported-schema-version'));
+  } finally {
+    cleanFixtureOutput();
+  }
+});
+
+test('editor slot outlets: palette filtering, insertion, rejection, reordering, removal on SlotCard.actions', async () => {
+  const { metadata, registry } = await buildFixture();
+  try {
+    const slotCardMeta = byName(metadata, 'SlotCard');
+    const slotIconMeta = byName(metadata, 'SlotIcon');
+    const greeterMeta = byName(metadata, 'Greeter');
+    const cardMeta = byName(metadata, 'Card');
+
+    const doc = {
+      schemaVersion: 2,
+      root: {
+        kind: 'instance',
+        instanceId: 'root-1',
+        componentId: slotCardMeta.id,
+        props: {
+          header: { kind: 'nodes', value: { items: [{ itemId: 'h1', kind: 'text', value: 'Header' }] } },
+          actions: { kind: 'nodes', value: { items: [] } },
+          icon: { kind: 'componentRef', value: { source: 'project', id: slotIconMeta.id } },
+          caption: { kind: 'richText', value: { kind: 'richText', version: 1, inline: false, nodes: [{ type: 'paragraph', children: [{ type: 'text', text: 'Caption', marks: [] }] }] } },
+        },
+      },
+    };
+    assert.equal(runtime.validateComposition(doc, metadata, registry).valid, true);
+
+    // --- Palette filtering: SlotCard.actions is `{kind:"any", maxItems:1}` per-entry
+    // (each() path) - Greeter (a real registered project component) must be offered;
+    // Card, which is ALSO a real component, is offered too since "any" has no accepts
+    // list - both entries appear in the palette, both `ok: true`, computed via the same
+    // checkSlotValue/resolveSlotPolicy pair validateComposition itself uses. ---
+    const palette = editor.computeInsertablePalette(slotCardMeta, 'actions', [], 0, metadata, registry);
+    const greeterEntry = palette.find((p) => p.component.id === greeterMeta.id);
+    const cardEntry = palette.find((p) => p.component.id === cardMeta.id);
+    assert.ok(greeterEntry?.result.ok, 'Greeter is insertable into an "any"-policy actions slot');
+    assert.ok(cardEntry?.result.ok, 'Card is insertable into an "any"-policy actions slot too');
+
+    // --- Insertion: insert a Greeter instance as the first action. newInstanceItem
+    // creates a bare instance with no props set - Greeter's "name" prop is required,
+    // so set it before inserting (a real palette-driven "drop" would prompt for
+    // required props too; this test only needs a document that both insertSlotItem's
+    // own acceptance check AND the full validateComposition pass agree is valid). ---
+    const greeterItem = editor.newInstanceItem(greeterMeta.id);
+    greeterItem.instance.props.name = { kind: 'value', value: { type: 'string', value: 'Action Greeter' } };
+    const afterInsert = editor.insertSlotItem(doc, metadata, registry, [], 'actions', 0, greeterItem);
+    assert.equal(afterInsert.ok, true, JSON.stringify(afterInsert));
+    assert.equal(afterInsert.document.root.props.actions.value.items.length, 1);
+    assert.equal(afterInsert.document.root.props.actions.value.items[0].itemId, greeterItem.itemId);
+    assert.notEqual(afterInsert.document, doc, 'insertion produces a new document, never mutates the original');
+    assert.equal(doc.root.props.actions.value.items.length, 0, 'the original document is untouched');
+    assert.equal(runtime.validateComposition(afterInsert.document, metadata, registry).valid, true);
+
+    // --- Rejection: SlotCard.actions has collection maxItems: 3 and each() maxItems: 1
+    // per entry (SlotCard's own colocated rule). Inserting a SECOND item at the SAME
+    // per-entry index a real UI would call "adding to this same action slot" still
+    // succeeds structurally (a new array entry, its own independent per-entry budget) -
+    // exercise the real rejection case instead: inserting text where the per-entry
+    // policy is "any" (which DOES accept text) is not a rejection; instead prove
+    // rejection via the componentRef `icon` slot, which only accepts SlotIcon. ---
+    const iconRejection = editor.setComponentRefProp(afterInsert.document, metadata, registry, [], 'icon', { source: 'project', id: greeterMeta.id });
+    assert.equal(iconRejection.ok, false, 'Greeter is not in icon\'s accepts list (only SlotIcon)');
+    assert.ok(iconRejection.reason.length > 0, 'a rejected drop carries a human-readable reason');
+    assert.equal(iconRejection.document, afterInsert.document, 'a rejected operation leaves the document unchanged (same reference)');
+    assert.equal(runtime.validateComposition(iconRejection.document, metadata, registry).valid, true, 'the untouched document is still valid');
+
+    // Collection maxItems: fill actions up to 3, a 4th insertion must be rejected and leave items.length at 3.
+    let doc3 = afterInsert.document;
+    for (let i = 0; i < 2; i++) {
+      const step = editor.insertSlotItem(doc3, metadata, registry, [], 'actions', doc3.root.props.actions.value.items.length, editor.newTextItem(`Action ${String(i + 2)}`));
+      assert.equal(step.ok, true, JSON.stringify(step));
+      doc3 = step.document;
+    }
+    assert.equal(doc3.root.props.actions.value.items.length, 3);
+    const overflow = editor.insertSlotItem(doc3, metadata, registry, [], 'actions', 3, editor.newTextItem('Action 4'));
+    assert.equal(overflow.ok, false, 'a 4th action exceeds actions\' collection maxItems: 3');
+    assert.match(overflow.reason, /maxItems/);
+    assert.equal(overflow.document, doc3, 'the document is unchanged after the rejected 4th insertion');
+    assert.equal(doc3.root.props.actions.value.items.length, 3, 'items.length did not change');
+
+    // --- Reordering: move the first action to the last position, preserving every itemId
+    // (and the nested instance's own instanceId). ---
+    const idsBefore = doc3.root.props.actions.value.items.map((i) => i.itemId);
+    const instanceIdBefore = doc3.root.props.actions.value.items[0].instance.instanceId;
+    const reordered = editor.moveSlotItem(doc3, [], 'actions', 0, 2);
+    const idsAfter = reordered.root.props.actions.value.items.map((i) => i.itemId);
+    assert.deepEqual(new Set(idsAfter), new Set(idsBefore), 'reordering preserves the exact set of itemIds');
+    assert.notDeepEqual(idsAfter, idsBefore, 'reordering actually changed the order');
+    assert.equal(idsAfter[2], idsBefore[0], 'the moved item landed at the target index');
+    const movedItem = reordered.root.props.actions.value.items[2];
+    assert.equal(movedItem.instance.instanceId, instanceIdBefore, "the moved instance's own instanceId survives the reorder");
+    assert.equal(runtime.validateComposition(reordered, metadata, registry).valid, true, 'a reordered document still validates');
+
+    // A path into the moved item's own subtree still resolves correctly after reordering -
+    // this is the entire point of id-based addressing over v1's child-index paths.
+    const pathToMoved = [{ propName: 'actions', itemId: movedItem.itemId }];
+    assert.equal(editor.getInstanceAtPath(reordered, pathToMoved).instanceId, instanceIdBefore);
+
+    // --- Removal ---
+    const removed = editor.removeSlotItem(reordered, [], 'actions', movedItem.itemId);
+    assert.equal(removed.root.props.actions.value.items.length, 2);
+    assert.ok(!removed.root.props.actions.value.items.some((i) => i.itemId === movedItem.itemId));
+    assert.equal(runtime.validateComposition(removed, metadata, registry).valid, true);
+  } finally {
+    cleanFixtureOutput();
+  }
+});
+
+test('editor slot outlets: rich text mark toggling validated through checkSlotValue', async () => {
+  const { metadata, registry } = await buildFixture();
+  try {
+    const slotCardMeta = byName(metadata, 'SlotCard');
+    const slotIconMeta = byName(metadata, 'SlotIcon');
+
+    const doc = {
+      schemaVersion: 2,
+      root: {
+        kind: 'instance',
+        instanceId: 'root-1',
+        componentId: slotCardMeta.id,
+        props: {
+          header: { kind: 'nodes', value: { items: [] } },
+          actions: { kind: 'nodes', value: { items: [] } },
+          icon: { kind: 'componentRef', value: { source: 'project', id: slotIconMeta.id } },
+          caption: { kind: 'richText', value: editor.plainRichText('Hello', false) },
+        },
+      },
+    };
+    assert.equal(runtime.validateComposition(doc, metadata, registry).valid, true);
+
+    // caption's policy accepts only the "bold" mark, not "italic" (SlotCard's own colocated rule).
+    const bolded = editor.toggleRichTextMark(doc.root.props.caption.value, 'bold');
+    const okResult = editor.checkRichTextValue(slotCardMeta, 'caption', registry, bolded);
+    assert.equal(okResult.ok, true);
+    const afterBold = editor.setRichTextProp(doc, metadata, registry, [], 'caption', bolded);
+    assert.equal(afterBold.ok, true, JSON.stringify(afterBold));
+    assert.equal(afterBold.document.root.props.caption.value.nodes[0].children[0].marks.includes('bold'), true);
+    assert.equal(runtime.validateComposition(afterBold.document, metadata, registry).valid, true);
+
+    const { renderToStaticMarkup } = require('react-dom/server');
+    const html = renderToStaticMarkup(runtime.renderComposition(afterBold.document, metadata, registry));
+    assert.match(html, /<strong>Hello<\/strong>/, 'the bold mark is reflected in the rendered output');
+
+    // italic is not in caption's accepted marks list - toggling it must be rejected and leave the document unchanged.
+    const italicized = editor.toggleRichTextMark(afterBold.document.root.props.caption.value, 'italic');
+    const rejection = editor.setRichTextProp(afterBold.document, metadata, registry, [], 'caption', italicized);
+    assert.equal(rejection.ok, false, 'italic is not in caption\'s accepted marks list');
+    assert.ok(/italic/.test(rejection.reason) || rejection.diagnostics.some((d) => d.code === 'richtext-mark-not-accepted'));
+    assert.equal(rejection.document, afterBold.document, 'the rejected mark toggle leaves the document unchanged');
+  } finally {
+    cleanFixtureOutput();
+  }
+});
+
+test('editor slot outlets: componentRef picker restricted to the resolved policy\'s accepts list via checkSlotValue', async () => {
+  const { metadata, registry } = await buildFixture();
+  try {
+    const slotCardMeta = byName(metadata, 'SlotCard');
+    const slotIconMeta = byName(metadata, 'SlotIcon');
+    const greeterMeta = byName(metadata, 'Greeter');
+
+    const picker = editor.computeComponentRefPalette(slotCardMeta, 'icon', metadata, registry);
+    const iconEntry = picker.find((p) => p.component.id === slotIconMeta.id);
+    const greeterEntry = picker.find((p) => p.component.id === greeterMeta.id);
+    assert.ok(iconEntry?.result.ok, 'SlotIcon is accepted by icon\'s componentRef policy');
+    assert.equal(greeterEntry?.result.ok, false, 'Greeter is not in icon\'s accepts list');
   } finally {
     cleanFixtureOutput();
   }
