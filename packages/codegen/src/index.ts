@@ -4,7 +4,13 @@ import {extractComponents} from "./extract.js"
 import {GenerateConfig, generateFiles} from "./generate.js"
 import path from "path";
 import {createLogger} from "./utils.js";
+import type {AnnotationSourcesConfig} from "./slotTypes.js";
 
+export type {AnnotationSourcesConfig} from "./slotTypes.js";
+
+// docs/slot-contract.md section 5, "Annotation source discovery (config)". `metadataModule`
+// entries and `overrideSources` are resolved to absolute paths by fillConfig below, the same
+// root-anchoring convention every other relative-path field in this config already uses.
 export type CodegenConfig = {
     debug?: boolean
     silent?: string
@@ -12,6 +18,7 @@ export type CodegenConfig = {
     reactTypesFilePath?: string
     tsConfigFilePath: string
     componentRoots: string[]
+    annotationSources?: AnnotationSourcesConfig
 } & GenerateConfig
 
 export type ForgeConfig = Partial<CodegenConfig>
@@ -34,6 +41,19 @@ export function fillConfig(config: ForgeConfig, projectRootDir = "./"): CodegenC
     const componentRoots = (config.componentRoots ?? [baseDir]).map(root => path.resolve(rootDir, root))
     const pathPrefix = config.pathPrefix ?? "@/"
 
+    const annotationSources: AnnotationSourcesConfig | undefined = config.annotationSources && {
+        ...config.annotationSources,
+        ...(config.annotationSources.libraries !== undefined ? {
+            libraries: config.annotationSources.libraries.map(library => ({
+                ...library,
+                metadataModule: path.resolve(rootDir, library.metadataModule)
+            }))
+        } : {}),
+        ...(config.annotationSources.overrideSources !== undefined ? {
+            overrideSources: config.annotationSources.overrideSources.map(source => path.resolve(rootDir, source))
+        } : {})
+    }
+
     return {
         ...config,
         tsConfigFilePath,
@@ -43,6 +63,7 @@ export function fillConfig(config: ForgeConfig, projectRootDir = "./"): CodegenC
         baseDir,
         pathPrefix,
         componentRoots,
+        ...(annotationSources !== undefined ? { annotationSources } : {}),
         ...(config.reactTypesFilePath !== undefined ? { reactTypesFilePath: path.resolve(rootDir, config.reactTypesFilePath) } : {})
     }
 }
