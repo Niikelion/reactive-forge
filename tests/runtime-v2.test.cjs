@@ -54,36 +54,14 @@ async function buildFixture() {
   const metadata = JSON.parse(fs.readFileSync(path.join(fixtureOutDir, 'metadata.json'), 'utf8'));
   const registry = (await import(pathToFileURL(path.join(fixtureOutDir, 'bundle.js')).href)).components;
 
-  // KNOWN, REPORTED GAP (see this worker's final report): packages/codegen/src/extract.ts's
-  // typeToSchema was never updated to recognize `React.ComponentType<Props>` and produce a real
-  // ComponentTypeSchema for it (packages/schema/src/schema/ComponentType.ts exists and is wired
-  // into resolvePath/checkPolicyCompatibility, but nothing in extraction ever calls it) - a real
-  // prop typed `ComponentType<...>` extracts as some other schema shape today, so codegen's own
-  // merge step drops any `componentRef` rule targeting it (`policy-type-mismatch`,
-  // "componentRef policy targets a non-ComponentType path", visible on SlotCard's own
-  // `diagnostics` in the real generated metadata.json). This is a packages/codegen gap, outside
-  // this worker's file ownership (packages/runtime/src/{composition,validate,render,index}.ts
-  // only) - not something this test works around by mocking `resolveSlotPolicy`/`checkSlotValue`
-  // or the runtime's own componentRef handling, both of which run for real below against this
-  // patched metadata. The patch below is the minimal, explicitly-flagged fix-up: it gives the
-  // real generated `icon` prop a real `componentType` schema and a real `componentRef`
-  // `EffectiveSlotRule`, exactly what a fixed extract.ts would have produced, so this file's
-  // OWN scope (validate.ts/render.ts's componentRef wiring) still gets a genuine, real-bundle
-  // proof rather than being silently left untested because of a gap one layer down.
+  // extract.ts's typeToSchema now recognizes `React.ComponentType<Props>` (alias-symbol-name
+  // check, since a function-component type structurally has call signatures and would otherwise
+  // be caught by the FunctionSchema branch) and produces a real ComponentTypeSchema; SlotCard's
+  // `icon` prop and its componentRef rule come straight from the real generated metadata.json, no
+  // patching needed.
   const slotCard = metadata.components.find(c => c.name === 'SlotCard');
-  const slotIcon = metadata.components.find(c => c.name === 'SlotIcon');
-  if (slotCard && slotIcon) {
-    slotCard.props.icon.schema = {
-      type: 'componentType',
-      props: { type: 'object', properties: { size: { schema: { type: 'union', types: [{ type: 'number' }, { type: 'undefined' }] }, required: false } } },
-    };
-    slotCard.slots = (slotCard.slots ?? []).filter(r => JSON.stringify(r.path) !== JSON.stringify(['icon']));
-    slotCard.slots.push({
-      path: ['icon'],
-      slot: { kind: 'componentRef', accepts: [{ source: 'project', id: slotIcon.id }] },
-      appliedFrom: { slot: 'library' },
-    });
-  }
+  assert.equal(slotCard?.props.icon.schema.type, 'componentType', 'icon should extract as a real ComponentTypeSchema');
+  assert.ok(slotCard.slots?.some(r => JSON.stringify(r.path) === JSON.stringify(['icon']) && r.slot?.kind === 'componentRef'), 'icon should keep its real componentRef slot rule');
 
   return { metadata, registry };
 }

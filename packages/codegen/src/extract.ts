@@ -22,6 +22,7 @@ import {
     ArraySchema,
     BigIntSchema,
     BooleanSchema,
+    ComponentTypeSchema,
     DateSchema,
     FunctionSchema,
     intersect,
@@ -401,6 +402,23 @@ function createUtils(project: Project, sourceDirectory: string)
 
     function typeToSchema(type: Type, node: Node, report: Report, propSink?: PropSink): Schema
     {
+        // React.ComponentType<Props> (docs/slot-contract.md section 2, "React.ComponentType<Props>
+        // paths"): a constructor reference, not ReactNode-domain. Checked by alias-symbol name
+        // rather than structural assignability, since a function-component type structurally has
+        // call signatures and would otherwise be caught by the FunctionSchema branch below (wrong -
+        // a component constructor is never "called" by the prop's consumer the way an event
+        // handler is). Only the literal alias name `ComponentType` (react's own exported alias)
+        // triggers this - `FC<Props>` (used for the component's own outer signature elsewhere in
+        // this file, never as a nested prop type in existing fixtures) is deliberately not treated
+        // as componentType-domain here, matching the contract's exact wording.
+        if (type.getAliasSymbol()?.getName() === "ComponentType") {
+            const [propsTypeArg] = type.getAliasTypeArguments()
+            const propsSchema = propsTypeArg !== undefined
+                ? typeToSchema(propsTypeArg, node, report)
+                : new ObjectSchema({})
+            return new ComponentTypeSchema(propsSchema)
+        }
+
         if (types.ReactNodeType.isAssignableTo(type))
             return ReactNodeSchema.instance
 
