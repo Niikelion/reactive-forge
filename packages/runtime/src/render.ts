@@ -1,21 +1,23 @@
-import {createElement, ReactElement, ReactNode} from "react"
+import {createElement, Fragment, ReactElement, ReactNode} from "react"
 import {
     ComponentLibraryData,
     ComponentMetadata,
     findComponentEntry,
     fromValueJson,
     MetadataDocument,
+    RichTextBlockNode,
+    RichTextTextNode,
+    RichTextValueJson,
     schemaFromJson,
     ValueConstruct
 } from "@reactive-forge/schema"
-import {CompositionDocument, CompositionInstance, CompositionNode} from "./composition.js"
-import {CompositionDiagnostic, validateComposition} from "./validate.js"
+import {CompositionDocument, CompositionDocumentV1, CompositionInstance, CompositionSlotItem} from "./composition.js"
+import {CompositionDiagnostic, resolvePropSlotRules, validateComposition} from "./validate.js"
 
 /**
- * Host-supplied bindings a rendered composition's `"callback"` prop values
- * resolve against (development-plan point 4: "Persist callback references,
- * not function bodies"). Never populated from the composition document
- * itself - only the caller of `renderComposition` supplies it, per-render.
+ * Host-supplied bindings a rendered composition's `"callback"` prop values resolve against. Never
+ * populated from the composition document itself - only the caller of `renderComposition` supplies
+ * it, per-render.
  */
 export type CallbackRegistry = Record<string, (...args: unknown[]) => unknown>
 
@@ -39,15 +41,9 @@ function findMetadata(metadata: MetadataDocument, id: string): ComponentMetadata
     return found
 }
 
-// Resolves a `ValueJson`/`ValueConstruct` "element" reference (a single
-// nested-component reference embedded in an ordinary prop value, per
-// docs/metadata-contract.md's ValueJson - distinct from a composition node's
-// own `children` array) into a real, rendered React element. Identity here
-// is still `sourcePath`/`name`, exactly as ValueJson's frozen "element"
-// variant carries it (packages/schema/src/schema/ValueJson.ts is out of this
-// gate's file-ownership scope) - resolved to the stable metadata `id` via a
-// metadata lookup, then to the registry the same way every other lookup in
-// this module works.
+// Resolves a `ValueJson`/`ValueConstruct` "element" reference (a single nested-component reference
+// embedded in an ordinary prop value, distinct from a "nodes"-kind slot) into a real, rendered
+// React element. Unchanged from v1 - still resolved via sourcePath/name metadata lookup.
 function resolveElementReference(
     element: {path: string, name: string, args: Record<string, ValueConstruct>},
     metadata: MetadataDocument,
@@ -64,12 +60,6 @@ function resolveElementReference(
     return createElement(entry.component, props)
 }
 
-// Converts a validated `ValueConstruct` into a plain JS value suitable for a
-// real React prop (as opposed to the JSON-safe `ValueJson` it was decoded
-// from). Functions never reach here - a validated composition document only
-// carries `"callback"` prop values through `CompositionPropValue`, resolved
-// separately in `resolvePropValue` below, never through `ValueJson`/
-// `ValueConstruct` (which excludes "function" entirely, see ValueJson.ts).
 function constructToJs(construct: ValueConstruct, metadata: MetadataDocument, library: ComponentLibraryData): unknown {
     switch (construct.type) {
         case "void":
@@ -98,40 +88,101 @@ function constructToJs(construct: ValueConstruct, metadata: MetadataDocument, li
     }
 }
 
-function renderChild(node: CompositionNode, metadata: MetadataDocument, library: ComponentLibraryData, callbacks: CallbackRegistry, key: number): ReactNode {
-    switch (node.kind) {
+// Fixed, non-overridable rich-text renderer, docs/slot-contract.md section 9: RichTextTextNode ->
+// text wrapped in <strong>/<em> per its marks (nested in mark order, deterministic),
+// RichTextParagraphNode -> <p>, list nodes -> <ul>/<ol> with <li> children. A small, fixed mapping
+// - never configurable - so it can never become an injection point.
+function renderRichTextTextNode(node: RichTextTextNode, key?: number): ReactNode {
+    let content: ReactNode = node.text
+    // Nested in mark order: the innermost wrap is the *last* mark in node.marks, so marks read
+    // left-to-right as "outermost to innermost" - deterministic given RichTextMark is a plain array.
+    for (let i = node.marks.length - 1; i >= 0; i--) {
+        const mark = node.marks[i]
+        if (mark === "bold") content = createElement("strong", null, content)
+        else if (mark === "italic") content = createElement("em", null, content)
+    }
+    return key !== undefined ? createElement(Fragment, {key}, content) : content
+}
+
+function renderRichTextBlockNode(node: RichTextBlockNode, key: number): ReactNode {
+    if (node.type === "paragraph")
+        return createElement("p", {key}, node.children.map((child, i) => renderRichTextTextNode(child, i)))
+    const tag = node.type === "bulletList" ? "ul" : "ol"
+    return createElement(tag, {key}, node.items.map((item, i) =>
+        createElement("li", {key: i}, item.children.map((child, j) => renderRichTextTextNode(child, j)))))
+}
+
+function renderRichText(value: RichTextValueJson): ReactNode {
+    if (value.inline) return value.nodes.map((node, i) => renderRichTextTextNode(node, i))
+    return value.nodes.map((node, i) => renderRichTextBlockNode(node, i))
+}
+
+function renderSlotItem(item: CompositionSlotItem, metadata: MetadataDocument, library: ComponentLibraryData, callbacks: CallbackRegistry): ReactNode {
+    switch (item.kind) {
         case "text":
-            return node.value
+            return item.value
         case "void":
             return null
         case "instance":
-            return renderInstance(node, metadata, library, callbacks, key)
+            return renderInstance(item.instance, metadata, library, callbacks)
     }
 }
 
+// Renders a "nodes" prop value: each CompositionSlotItem in order, wrapped in a Fragment when
+// items.length !== 1 or the resolved policy is multiple:true (docs/slot-contract.md section 9).
+function renderSlotValue(
+    propName: string,
+    componentMeta: ComponentMetadata,
+    items: CompositionSlotItem[],
+    metadata: MetadataDocument,
+    library: ComponentLibraryData,
+    callbacks: CallbackRegistry
+): ReactNode {
+    const rendered = items.map(item => renderSlotItem(item, metadata, library, callbacks))
+    const rules = resolvePropSlotRules(componentMeta, propName)
+    const multiple = rules.itemRule?.slot !== undefined && "multiple" in rules.itemRule.slot && rules.itemRule.slot.multiple === true
+    if (rendered.length === 1 && !multiple) return rendered[0]
+    return createElement(Fragment, null, ...rendered)
+}
+
+function resolveComponentRef(identity: {source: "project" | "external"}, library: ComponentLibraryData): unknown {
+    if (identity.source !== "project")
+        throw new Error(`renderComposition: componentRef to an external identity is not resolvable through the registry (source "${identity.source}") - phase 2 only resolves project-owned components`)
+    const projectIdentity = identity as {source: "project", id: string}
+    const entry = findComponentEntry(library, projectIdentity.id)
+    if (entry === undefined) throw new Error(`No registry entry for componentRef id "${projectIdentity.id}" (should have been caught by validateComposition)`)
+    return entry.component
+}
+
 function renderInstance(node: CompositionInstance, metadata: MetadataDocument, library: ComponentLibraryData, callbacks: CallbackRegistry, key?: number): ReactElement {
-    const componentMeta = findMetadata(metadata, node.id)
-    const entry = findComponentEntry(library, node.id)
-    if (entry === undefined) throw new Error(`No registry entry with id "${node.id}" (should have been caught by validateComposition)`)
+    const componentMeta = findMetadata(metadata, node.componentId)
+    const entry = findComponentEntry(library, node.componentId)
+    if (entry === undefined) throw new Error(`No registry entry with id "${node.componentId}" (should have been caught by validateComposition)`)
 
     const props: Record<string, unknown> = {}
     for (const [propName, propMeta] of Object.entries(componentMeta.props)) {
-        if (propName === "children") continue
         const provided = node.props[propName]
         if (provided === undefined) continue
-        if (provided.kind === "callback") {
-            props[propName] = callbacks[provided.name]
-        } else {
-            const schema = schemaFromJson(propMeta.schema)
-            const construct = fromValueJson(schema, provided.value)
-            props[propName] = constructToJs(construct, metadata, library)
+        switch (provided.kind) {
+            case "callback":
+                props[propName] = callbacks[provided.name]
+                break
+            case "componentRef":
+                props[propName] = resolveComponentRef(provided.value, library)
+                break
+            case "richText":
+                props[propName] = renderRichText(provided.value)
+                break
+            case "nodes":
+                props[propName] = renderSlotValue(propName, componentMeta, provided.value.items, metadata, library, callbacks)
+                break
+            case "value": {
+                const schema = schemaFromJson(propMeta.schema)
+                const construct = fromValueJson(schema, provided.value)
+                props[propName] = constructToJs(construct, metadata, library)
+                break
+            }
         }
-    }
-
-    const children = node.children ?? []
-    if (children.length > 0) {
-        const rendered = children.map((child, index) => renderChild(child, metadata, library, callbacks, index))
-        props["children"] = rendered.length === 1 ? rendered[0] : rendered
     }
 
     if (key !== undefined) props["key"] = key
@@ -139,16 +190,14 @@ function renderInstance(node: CompositionInstance, metadata: MetadataDocument, l
 }
 
 /**
- * Validates `doc` (throwing `CompositionValidationError` with the full
- * diagnostic list if invalid) and renders it into a real, nested React
- * element tree - `React.createElement` output, not a description of one.
- * Component ids resolve to actual `FC`s via the registry
- * (`findComponentEntry`), prop values decode from `ValueJson` back to real
- * JS via `fromValueJson`, and `"callback"` prop values resolve against
- * `options.callbacks` (see `CallbackRegistry`).
+ * Validates `doc` (throwing `CompositionValidationError` with the full diagnostic list if invalid)
+ * and renders it into a real, nested React element tree. Accepts `CompositionDocument |
+ * CompositionDocumentV1` at the type level so a bare v1 document handed here surfaces the
+ * `"unsupported-schema-version"` diagnostic (via `validateComposition`) instead of failing to
+ * compile - see composition.ts's versioning doc comment.
  */
 export function renderComposition(
-    doc: CompositionDocument,
+    doc: CompositionDocument | CompositionDocumentV1,
     metadata: MetadataDocument,
     library: ComponentLibraryData,
     options: RenderOptions = {}
@@ -156,5 +205,5 @@ export function renderComposition(
     const callbacks = options.callbacks ?? {}
     const result = validateComposition(doc, metadata, library, callbacks)
     if (!result.valid) throw new CompositionValidationError(result.diagnostics)
-    return renderInstance(doc.root, metadata, library, callbacks)
+    return renderInstance((doc as CompositionDocument).root, metadata, library, callbacks)
 }
