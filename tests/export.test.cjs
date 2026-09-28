@@ -1,35 +1,19 @@
-// Gate E (docs/claude-handoff.md section E / docs/development-plan.md's
-// architecture diagram's "later: React source export"): composition-to-TSX
-// export. Proves the acceptance bar verbatim: "Composition-to-TSX export
-// follows the supported document contract; exported code must compile and
-// render equivalent output."
+// Composition-to-TSX export (gate E, extended for slots - phase 3 of the slot-contract work,
+// docs/slot-contract.md section 9). Reuses the same real-bundle-plus-metadata pipeline
+// tests/runtime-v2.test.cjs already proves for the v2 runtime (`forge codegen` then `forge bundle`
+// against tests/fixtures/bundle-project/, via this file's own forge.export.config.ts/out-export to
+// avoid racing other test files' output directories), then drives @reactive-forge/runtime's
+// exportToTsx (packages/runtime/src/export.ts) against the real generated metadata.json.
 //
-// Reuses the same real-bundle-plus-metadata pipeline tests/runtime.test.cjs
-// and tests/editor.test.cjs already prove (`forge codegen` then
-// `forge bundle` against tests/fixtures/bundle-project/, via its own
-// forge.export.config.ts/out-export to avoid racing other test files'
-// output directories - see forge.runtime.config.ts for the established
-// rationale), then drives @reactive-forge/runtime's exportToTsx
-// (packages/runtime/src/export.ts) against the real generated metadata.json.
+// "Compiles": the generated TSX is written to a real file and fed through the real TypeScript
+// compiler (ts.createProgram + getPreEmitDiagnostics, against the fixture project's own
+// tsconfig.json compiler options) - a genuine typecheck.
 //
-// "Compiles": the generated TSX is written to a real file and fed through
-// the real TypeScript compiler (ts.createProgram + getPreEmitDiagnostics,
-// against the fixture project's own tsconfig.json compiler options) - a
-// genuine typecheck, not transpileModule's syntax-only pass and not "looks
-// right by inspection".
-//
-// "Renders equivalent output": the exported TSX is required through the
-// same tests/source-loader.cjs TS-to-CommonJS hook every other test file in
-// this suite already relies on (registered globally by scripts/test.cjs's
-// `--require ./tests/source-loader.cjs`), rendered with react-dom/server's
-// renderToStaticMarkup, and diffed byte-for-byte against the same
-// composition document rendered through the already-proven
-// @reactive-forge/runtime's renderComposition against the real bundle.js
-// registry. Both paths use the same source components (the exported TSX
-// imports directly from tests/fixtures/bundle-project/src/components/*.tsx;
-// the registry path uses the bundled version of the same source), the same
-// prop values, and the same callback registry, so byte-identical HTML - not
-// just "equivalent modulo whitespace" - is the honest claim here.
+// "Renders equivalent output": the exported TSX is required through the same
+// tests/source-loader.cjs TS-to-CommonJS hook every other test file in this suite already relies
+// on, rendered with react-dom/server's renderToStaticMarkup, and diffed byte-for-byte against the
+// same composition document rendered through the already-proven @reactive-forge/runtime's
+// renderComposition against the real bundle.js registry.
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const test = require('node:test');
@@ -67,70 +51,108 @@ function cleanFixtureOutput() {
   fs.rmSync(target, { recursive: true, force: true });
 }
 
-test('exportToTsx produces TSX that compiles and renders output identical to the runtime', async () => {
+function byName(metadata, name) {
+  const found = metadata.components.find(c => c.name === name);
+  assert.ok(found, `expected component ${name} in metadata.json`);
+  return found;
+}
+
+async function buildFixture() {
   cleanFixtureOutput();
+  const codegenResult = runCli(['codegen', '--config', 'forge.export.config.ts'], fixtureProject);
+  assert.equal(codegenResult.status, 0, codegenResult.stdout + codegenResult.stderr);
+  const bundleResult = runCli(['bundle', '--config', 'forge.export.config.ts'], fixtureProject);
+  assert.equal(bundleResult.status, 0, bundleResult.stdout + bundleResult.stderr);
+
+  const bundlePath = path.join(fixtureOutDir, 'bundle.js');
+  const metadataPath = path.join(fixtureOutDir, 'metadata.json');
+  const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+  const registry = (await import(pathToFileURL(bundlePath).href)).components;
+  assert.equal(metadata.schemaVersion, 2, 'annotationSources.colocated produces a schemaVersion 2 metadata document');
+  return { metadata, registry };
+}
+
+function compileTsx(filePaths) {
+  const fixtureTsconfig = JSON.parse(fs.readFileSync(path.join(fixtureProject, 'tsconfig.json'), 'utf8'));
+  const { options: compilerOptions, errors: optionErrors } = ts.convertCompilerOptionsFromJson(fixtureTsconfig.compilerOptions, scratchDir);
+  assert.deepEqual(optionErrors, [], 'tsconfig.json compiler options parse cleanly');
+  const program = ts.createProgram(filePaths, compilerOptions);
+  const normalizedTargets = new Set(filePaths.map(p => p.replace(/\\/g, '/')));
+  const diagnostics = ts.getPreEmitDiagnostics(program).filter(d => d.file && normalizedTargets.has(d.file.fileName));
+  if (diagnostics.length > 0) {
+    const formatted = diagnostics.map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n')).join('\n');
+    assert.fail(`Generated TSX failed to typecheck:\n${formatted}`);
+  }
+}
+
+function scratchRelativeResolver() {
+  return (component) => {
+    const absoluteSource = path.resolve(fixtureProject, component.sourcePath);
+    const withoutExtension = absoluteSource.replace(/\.(tsx?|jsx?)$/i, '');
+    const relative = path.relative(scratchDir, withoutExtension).replace(/\\/g, '/');
+    return relative.startsWith('.') ? relative : `./${relative}`;
+  };
+}
+
+test('exportToTsx produces TSX that compiles and renders output identical to the runtime (value/callback/nested-instance coverage)', async () => {
+  const { metadata, registry } = await buildFixture();
   try {
-    const codegenResult = runCli(['codegen', '--config', 'forge.export.config.ts'], fixtureProject);
-    assert.equal(codegenResult.status, 0, codegenResult.stdout + codegenResult.stderr);
-    const bundleResult = runCli(['bundle', '--config', 'forge.export.config.ts'], fixtureProject);
-    assert.equal(bundleResult.status, 0, bundleResult.stdout + bundleResult.stderr);
+    const cardMeta = byName(metadata, 'Card');
+    const greeterMeta = byName(metadata, 'Greeter');
+    const showcaseMeta = byName(metadata, 'ExportShowcase');
 
-    const bundlePath = path.join(fixtureOutDir, 'bundle.js');
-    const metadataPath = path.join(fixtureOutDir, 'metadata.json');
-    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-    const registry = (await import(pathToFileURL(bundlePath).href)).components;
-
-    const cardMeta = metadata.components.find(c => c.name === 'Card');
-    const greeterMeta = metadata.components.find(c => c.name === 'Greeter');
-    const showcaseMeta = metadata.components.find(c => c.name === 'ExportShowcase');
-    assert.ok(cardMeta, 'metadata.json describes Card');
-    assert.ok(greeterMeta, 'metadata.json describes Greeter');
-    assert.ok(showcaseMeta, 'metadata.json describes ExportShowcase');
-
-    // --- A composition document nesting Card > [text, Greeter, void,
-    // ExportShowcase], covering one prop of every ValueJson kind the
-    // exporter serializes (string, number, boolean, array, object, date,
-    // bigint) plus two callback references and a text/void child. ---
+    // v2 shape: "children" is an ordinary "nodes" prop (no sibling `children` field), holding a
+    // text item, a nested Greeter instance, a void item, and a nested ExportShowcase instance -
+    // covering one prop of every remaining ValueJson kind (string, number, boolean, array, object,
+    // date, bigint) plus two callback references.
     const doc = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       root: {
         kind: 'instance',
-        id: cardMeta.id,
+        instanceId: 'root-card',
+        componentId: cardMeta.id,
         props: {
           title: { kind: 'value', value: { type: 'string', value: 'Export Proof' } },
           onRender: { kind: 'callback', name: 'onCardRender' },
+          children: {
+            kind: 'nodes',
+            value: {
+              items: [
+                { itemId: 'intro', kind: 'text', value: 'Intro: ' },
+                {
+                  itemId: 'greeter-item', kind: 'instance', instance: {
+                    kind: 'instance', instanceId: 'greeter-1', componentId: greeterMeta.id,
+                    props: {
+                      name: { kind: 'value', value: { type: 'string', value: 'Exported Host' } },
+                      times: { kind: 'value', value: { type: 'number', value: 2 } },
+                    },
+                  },
+                },
+                { itemId: 'void-item', kind: 'void' },
+                {
+                  itemId: 'showcase-item', kind: 'instance', instance: {
+                    kind: 'instance', instanceId: 'showcase-1', componentId: showcaseMeta.id,
+                    props: {
+                      title: { kind: 'value', value: { type: 'string', value: 'Showcase' } },
+                      count: { kind: 'value', value: { type: 'number', value: 7 } },
+                      active: { kind: 'value', value: { type: 'boolean', value: true } },
+                      tags: { kind: 'value', value: { type: 'array', value: [
+                        { type: 'string', value: 'a' },
+                        { type: 'string', value: 'b' },
+                      ] } },
+                      meta: { kind: 'value', value: { type: 'object', value: {
+                        source: { type: 'string', value: 'fixture' },
+                      } } },
+                      when: { kind: 'value', value: { type: 'date', value: '2024-01-01T00:00:00.000Z' } },
+                      big: { kind: 'value', value: { type: 'bigint', value: '123456789012345' } },
+                      onActivate: { kind: 'callback', name: 'onShowcaseActivate' },
+                    },
+                  },
+                },
+              ],
+            },
+          },
         },
-        children: [
-          { kind: 'text', value: 'Intro: ' },
-          {
-            kind: 'instance',
-            id: greeterMeta.id,
-            props: {
-              name: { kind: 'value', value: { type: 'string', value: 'Exported Host' } },
-              times: { kind: 'value', value: { type: 'number', value: 2 } },
-            },
-          },
-          { kind: 'void' },
-          {
-            kind: 'instance',
-            id: showcaseMeta.id,
-            props: {
-              title: { kind: 'value', value: { type: 'string', value: 'Showcase' } },
-              count: { kind: 'value', value: { type: 'number', value: 7 } },
-              active: { kind: 'value', value: { type: 'boolean', value: true } },
-              tags: { kind: 'value', value: { type: 'array', value: [
-                { type: 'string', value: 'a' },
-                { type: 'string', value: 'b' },
-              ] } },
-              meta: { kind: 'value', value: { type: 'object', value: {
-                source: { type: 'string', value: 'fixture' },
-              } } },
-              when: { kind: 'value', value: { type: 'date', value: '2024-01-01T00:00:00.000Z' } },
-              big: { kind: 'value', value: { type: 'bigint', value: '123456789012345' } },
-              onActivate: { kind: 'callback', name: 'onShowcaseActivate' },
-            },
-          },
-        ],
       },
     };
 
@@ -141,7 +163,6 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     const { renderToStaticMarkup } = require('react-dom/server');
     const { createElement } = require('react');
 
-    // --- Path A: the already-proven runtime, against the real bundle.js registry. ---
     const runtimeCalls = [];
     const runtimeCallbacks = {
       onCardRender: () => runtimeCalls.push('card'),
@@ -151,20 +172,10 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     const runtimeHtml = renderToStaticMarkup(runtimeElement);
     assert.deepEqual(runtimeCalls, ['card', 'showcase'], 'both callback references fired during the runtime render');
 
-    // --- exportToTsx: generate real TSX source text. ---
     fs.mkdirSync(scratchDir, { recursive: true });
     const exportedFilePath = path.join(scratchDir, 'ExportedComposition.tsx');
-    const tsxSource = exportToTsx(doc, metadata, {
-      // Places every import relative to `scratchDir`, since the exporter
-      // itself has no knowledge of where its caller will write the file -
-      // see ExportOptions.resolveImportPath's doc comment in export.ts.
-      resolveImportPath: (component) => {
-        const absoluteSource = path.resolve(fixtureProject, component.sourcePath);
-        const withoutExtension = absoluteSource.replace(/\.(tsx?|jsx?)$/i, '');
-        const relative = path.relative(scratchDir, withoutExtension).replace(/\\/g, '/');
-        return relative.startsWith('.') ? relative : `./${relative}`;
-      },
-    });
+    const tsxSource = exportToTsx(doc, metadata, { resolveImportPath: scratchRelativeResolver() });
+
     assert.match(tsxSource, /^import \{ Card } from/m, 'imports the Card component');
     assert.match(tsxSource, /^import \{ ExportShowcase } from/m, 'imports the ExportShowcase component');
     assert.match(tsxSource, /^import \{ Greeter } from/m, 'imports the Greeter component');
@@ -179,25 +190,13 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     assert.match(tsxSource, /onRender=\{callbacks\.onCardRender\}/, 'a callback reference serializes as a callbacks.<name> property access, never a function body');
     assert.match(tsxSource, /onActivate=\{callbacks\.onShowcaseActivate\}/);
     assert.doesNotMatch(tsxSource, /=>\s*\{/, 'no fabricated function body is ever emitted for a callback reference');
+    // "children" is an ordinary "nodes" prop: a multi-item slot serializes as a JSX attribute
+    // holding a Fragment, never nested `<Card>...</Card>` child syntax.
+    assert.match(tsxSource, /children=\{<>\{"Intro: "\}<Greeter[^]*?\{null\}<ExportShowcase/, 'children (text, instance, void, instance) serializes as a Fragment-wrapped "nodes" attribute, in order');
     fs.writeFileSync(exportedFilePath, tsxSource, 'utf8');
 
-    // --- "Compiles": a real TypeScript typecheck, not transpileModule's
-    // syntax-only pass and not visual inspection. Uses the fixture
-    // project's own tsconfig.json compiler options. ---
-    const fixtureTsconfig = JSON.parse(fs.readFileSync(path.join(fixtureProject, 'tsconfig.json'), 'utf8'));
-    const { options: compilerOptions, errors: optionErrors } = ts.convertCompilerOptionsFromJson(fixtureTsconfig.compilerOptions, scratchDir);
-    assert.deepEqual(optionErrors, [], 'tsconfig.json compiler options parse cleanly');
-    const program = ts.createProgram([exportedFilePath], compilerOptions);
-    const diagnostics = ts.getPreEmitDiagnostics(program).filter(d => d.file && d.file.fileName === exportedFilePath.replace(/\\/g, '/'));
-    if (diagnostics.length > 0) {
-      const formatted = diagnostics.map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n')).join('\n');
-      assert.fail(`Generated TSX failed to typecheck:\n${formatted}`);
-    }
+    compileTsx([exportedFilePath]);
 
-    // --- "Renders equivalent output": require the real generated TSX file
-    // (through the same TS-to-CommonJS hook every other test file in this
-    // suite relies on - see scripts/test.cjs / tests/source-loader.cjs) and
-    // render it with the same prop values and callback registry. ---
     const exportedModule = require(exportedFilePath);
     const exportedComponent = exportedModule.default;
     assert.equal(typeof exportedComponent, 'function', 'the exported file has a default-exported component function');
@@ -210,12 +209,139 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     const exportedHtml = renderToStaticMarkup(createElement(exportedComponent, { callbacks: exportedCallbacks }));
     assert.deepEqual(exportedCalls, ['card', 'showcase'], 'both callback references fired during the exported-component render, resolved through the supplied host callbacks object, never a stored function body');
 
-    // --- The actual equivalence claim: byte-identical HTML. Both paths
-    // render the exact same source components (the registry path via the
-    // bundled build, the exported-TSX path via a direct import of the same
-    // source files) with the exact same prop values, so nothing here is
-    // "equivalent modulo whitespace" - it's the same output. ---
     assert.equal(exportedHtml, runtimeHtml, 'the exported TSX renders byte-identical HTML to @reactive-forge/runtime\'s renderComposition for the same document');
+  } finally {
+    cleanFixtureOutput();
+  }
+});
+
+test('exportToTsx serializes "nodes"/"richText"/"componentRef" slot values identically to renderComposition (SlotCard + RichTextShowcase)', async () => {
+  const { metadata, registry } = await buildFixture();
+  try {
+    const slotCardMeta = byName(metadata, 'SlotCard');
+    const slotIconMeta = byName(metadata, 'SlotIcon');
+    const greeterMeta = byName(metadata, 'Greeter');
+    const richTextShowcaseMeta = byName(metadata, 'RichTextShowcase');
+
+    const doc = {
+      schemaVersion: 2,
+      root: {
+        kind: 'instance',
+        instanceId: 'root-slotcard',
+        componentId: slotCardMeta.id,
+        props: {
+          // Unannotated ReactNode (no explicit rule) - the synthesized AnyNodePolicy default has
+          // `multiple: true`, so even this single-item slot is Fragment-wrapped.
+          header: { kind: 'nodes', value: { items: [{ itemId: 'h1', kind: 'text', value: 'Header text' }] } },
+          // A real each()-policy declared array ("actions": ReactNode[], collection maxItems: 3),
+          // exercising a "nodes" slot with more than one item: a nested component instance AND a
+          // text item, in order.
+          actions: {
+            kind: 'nodes',
+            value: {
+              items: [
+                { itemId: 'a1', kind: 'instance', instance: { kind: 'instance', instanceId: 'greeter-action', componentId: greeterMeta.id, props: { name: { kind: 'value', value: { type: 'string', value: 'Action Greeter' } } } } },
+                { itemId: 'a2', kind: 'text', value: 'Second action' },
+              ],
+            },
+          },
+          // componentRef: a bare identifier expression, resolved through the registry the same way
+          // render.ts's resolveComponentRef does - never JSX-wrapped, never called.
+          icon: { kind: 'componentRef', value: { source: 'project', id: slotIconMeta.id } },
+          // richText, matching SlotCard's own real policy (marks: ["bold"] only, blocks.lists: false).
+          caption: {
+            kind: 'richText',
+            value: { kind: 'richText', version: 1, inline: false, nodes: [
+              { type: 'paragraph', children: [{ type: 'text', text: 'Bold caption', marks: ['bold'] }] },
+            ] },
+          },
+          // "children" - an ordinary "nodes" prop like any other (no special sibling field), here
+          // holding a nested RichTextShowcase instance whose own richText prop covers BOTH bold and
+          // italic marks together, plus both paragraph and list blocks.
+          children: {
+            kind: 'nodes',
+            value: {
+              items: [
+                {
+                  itemId: 'c1', kind: 'instance', instance: {
+                    kind: 'instance', instanceId: 'richtext-1', componentId: richTextShowcaseMeta.id,
+                    props: {
+                      body: {
+                        kind: 'richText',
+                        value: { kind: 'richText', version: 1, inline: false, nodes: [
+                          { type: 'paragraph', children: [{ type: 'text', text: 'Bold text', marks: ['bold'] }] },
+                          { type: 'bulletList', items: [{ type: 'listItem', children: [{ type: 'text', text: 'Italic item', marks: ['italic'] }] }] },
+                        ] },
+                      },
+                      // A bare ReactNode "nodes" slot with an EXPLICIT rule (`{kind: "any",
+                      // maxItems: 1}`, no `multiple` key) and exactly one item - the single-item,
+                      // non-multiple case that stays bare (no Fragment), unlike "header"'s
+                      // unannotated (multiple:true-by-default) single item above.
+                      footer: { kind: 'nodes', value: { items: [{ itemId: 'f1', kind: 'text', value: 'Footer text' }] } },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const validation = validateComposition(doc, metadata, registry);
+    assert.deepEqual(validation.diagnostics, [], 'the slot-export fixture document validates with zero diagnostics');
+    assert.equal(validation.valid, true);
+
+    const { renderToStaticMarkup } = require('react-dom/server');
+    const { createElement } = require('react');
+
+    const runtimeElement = renderComposition(doc, metadata, registry);
+    const runtimeHtml = renderToStaticMarkup(runtimeElement);
+
+    fs.mkdirSync(scratchDir, { recursive: true });
+    const exportedFilePath = path.join(scratchDir, 'ExportedSlotComposition.tsx');
+    const tsxSource = exportToTsx(doc, metadata, {
+      exportedComponentName: 'ExportedSlotComposition',
+      resolveImportPath: scratchRelativeResolver(),
+    });
+
+    assert.match(tsxSource, /^import \{ SlotCard } from/m, 'imports SlotCard');
+    assert.match(tsxSource, /^import \{ SlotIcon } from/m, 'imports SlotIcon (the componentRef target)');
+    assert.match(tsxSource, /^import \{ Greeter } from/m, 'imports the nested Greeter instance');
+    assert.match(tsxSource, /^import \{ RichTextShowcase } from/m, 'imports RichTextShowcase');
+
+    // "nodes": an unannotated (multiple:true-by-default) single-item slot still wraps in a Fragment.
+    assert.match(tsxSource, /header=\{<>\{"Header text"\}<\/>\}/, 'a single-item unannotated ReactNode slot is Fragment-wrapped (multiple:true synthesized default)');
+    // "nodes" reached through a DECLARED ARRAY prop (`actions: ReactNode[]`) serializes as a real
+    // array literal, not a Fragment - nested instance then text, in order (see
+    // serializeSlotArrayExpression's doc comment in export.ts for why this differs from a bare
+    // ReactNode slot's Fragment-wrapping rule).
+    assert.match(tsxSource, /actions=\{\[<Greeter name="Action Greeter" \/>, "Second action"\]\}/, 'the "actions" declared-array slot serializes its nested instance and text item in order as an array literal');
+    // "componentRef": a bare identifier, never JSX-wrapped, never called.
+    assert.match(tsxSource, /icon=\{SlotIcon\}/, 'componentRef emits a bare identifier expression, not JSX and not a call');
+    assert.doesNotMatch(tsxSource, /icon=\{<SlotIcon/, 'componentRef is never JSX-wrapped');
+    // "richText": the same fixed <p>/<strong> mapping render.ts produces.
+    assert.match(tsxSource, /caption=\{<><p><strong>\{"Bold caption"\}<\/strong><\/p><\/>\}/, 'richText serializes through the fixed paragraph/strong mapping');
+    // "richText" with both bold+italic marks and both paragraph/list blocks, nested under "children".
+    assert.match(tsxSource, /<p><strong>\{"Bold text"\}<\/strong><\/p><ul><li><em>\{"Italic item"\}<\/em><\/li><\/ul>/, 'a richText value with bold+italic marks and mixed paragraph/list blocks serializes through the fixed mapping');
+    // "nodes": a single item under an EXPLICITLY-authored rule that does not itself restate
+    // `multiple` (RichTextShowcase's `footer` rule is `{kind: "any", maxItems: 1}`, no `multiple`
+    // key) stays BARE - no Fragment - mirroring render.ts's precise `"multiple" in slot` check
+    // (which looks at whether the key is literally present, not at AnyNodePolicy's own "default
+    // true" semantics for an unruled path). This is the single-item non-multiple case
+    // docs/slot-contract.md section 9 calls out explicitly ("get this precise") - distinct from
+    // "header" above, whose single item IS Fragment-wrapped because it is genuinely unannotated.
+    assert.match(tsxSource, /footer=\{"Footer text"\}/, 'a single-item slot under an explicit non-multiple-keyed rule stays bare, unwrapped');
+    assert.doesNotMatch(tsxSource, /footer=\{<>/, 'no Fragment is emitted for this single-item, non-multiple slot');
+    fs.writeFileSync(exportedFilePath, tsxSource, 'utf8');
+
+    compileTsx([exportedFilePath]);
+
+    const exportedModule = require(exportedFilePath);
+    const exportedComponent = exportedModule.default;
+    const exportedHtml = renderToStaticMarkup(createElement(exportedComponent, { callbacks: {} }));
+
+    assert.equal(exportedHtml, runtimeHtml, 'the exported TSX renders byte-identical HTML to renderComposition for a document exercising "nodes"/"richText"/"componentRef"');
   } finally {
     cleanFixtureOutput();
   }
