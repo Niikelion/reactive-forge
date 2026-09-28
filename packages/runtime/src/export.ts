@@ -190,8 +190,22 @@ function collectSlotItemComponentIds(item: CompositionSlotItem, ids: Map<ImportK
     if (item.kind === "instance") collectInstanceComponentIds(item.instance, ids, metadata)
 }
 
+// Real bug fixed (phase 4 demo work surfaced it): this previously always registered a "nodes"-slot
+// instance under `projectKey(node.componentId)`/`{source:"project", id}`, even when that
+// `componentId`'s own `ComponentMetadata.external` was set - so an external component instance's
+// import line serialized as a broken relative path built from its `.d.ts` sourcePath instead of its
+// real package specifier. `componentRef`/`"element"` references already looked this up correctly
+// (`entry.identity`/`findComponentMetaByIdentity`); a plain nested instance did not.
+function instanceImportKeyAndIdentity(componentId: string, metadata: MetadataDocument): { key: ImportKey, identity: ComponentIdentity } {
+    const meta = findComponentMeta(metadata, componentId)
+    return meta.external !== undefined
+        ? {key: identityKey(meta.external), identity: meta.external}
+        : {key: projectKey(componentId), identity: {source: "project", id: componentId}}
+}
+
 function collectInstanceComponentIds(node: CompositionInstance, ids: Map<ImportKey, ComponentIdentity>, metadata: MetadataDocument): void {
-    ids.set(projectKey(node.componentId), {source: "project", id: node.componentId})
+    const {key, identity} = instanceImportKeyAndIdentity(node.componentId, metadata)
+    ids.set(key, identity)
     for (const propValue of Object.values(node.props)) {
         switch (propValue.kind) {
             case "value":
@@ -546,7 +560,8 @@ function serializePropFragment(
 // never a reason to emit nested `<Tag>...</Tag>` child syntax here.
 function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, callbacksParamName: string): string {
     const meta = findComponentMeta(metadata, node.componentId)
-    const entry = imports.get(projectKey(meta.id))
+    const {key} = instanceImportKeyAndIdentity(node.componentId, metadata)
+    const entry = imports.get(key)
     if (entry === undefined) throw new Error(`exportToTsx: internal error - missing import table entry for component id "${meta.id}"`)
 
     const propFragments = Object.entries(node.props)

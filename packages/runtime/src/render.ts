@@ -1,5 +1,7 @@
 import {createElement, Fragment, ReactElement, ReactNode} from "react"
 import {
+    ComponentIdentity,
+    componentIdentityEquals,
     ComponentLibraryData,
     ComponentMetadata,
     findComponentEntry,
@@ -145,12 +147,30 @@ function renderSlotValue(
     return createElement(Fragment, null, ...rendered)
 }
 
-function resolveComponentRef(identity: {source: "project" | "external"}, library: ComponentLibraryData): unknown {
-    if (identity.source !== "project")
-        throw new Error(`renderComposition: componentRef to an external identity is not resolvable through the registry (source "${identity.source}") - phase 2 only resolves project-owned components`)
-    const projectIdentity = identity as {source: "project", id: string}
-    const entry = findComponentEntry(library, projectIdentity.id)
-    if (entry === undefined) throw new Error(`No registry entry for componentRef id "${projectIdentity.id}" (should have been caught by validateComposition)`)
+// Real bug fixed (phase 4 demo work surfaced it): this previously threw for any non-project
+// identity, even though `checkSlotValue`/`validateComposition` (packages/schema) already resolve
+// external `componentRef` identities against `context.library` correctly (see SlotCheck.ts). A
+// project identity's `id` is exactly `ComponentEntry.id`, so it resolves directly. An external
+// identity has no such id of its own (docs/slot-contract.md section 5's `ExternalComponentIdentity`
+// carries package/subpath/exportName, not a precomputed hash) - `packages/runtime` must not
+// duplicate codegen's external-id hash formula (the same one-shared-computation principle
+// `componentId()` enforces for project ids), so it instead finds the `ComponentMetadata` entry
+// whose own `.external` field structurally matches (already present in `metadata`, no new
+// dependency), then looks up THAT entry's stable `id` in the registry - the same id the host
+// application is expected to register the real component under (see
+// tests/fixtures/editor-demo/demo.tsx's `withExternalLibraryEntries`).
+function resolveComponentRef(identity: ComponentIdentity, library: ComponentLibraryData, metadata: MetadataDocument): unknown {
+    if (identity.source === "project") {
+        const entry = findComponentEntry(library, identity.id)
+        if (entry === undefined) throw new Error(`No registry entry for componentRef id "${identity.id}" (should have been caught by validateComposition)`)
+        return entry.component
+    }
+    const componentMeta = metadata.components.find(c => c.external !== undefined && componentIdentityEquals(c.external, identity))
+    if (componentMeta === undefined)
+        throw new Error(`No metadata entry for external componentRef identity (package "${identity.package}", export "${identity.exportName}")`)
+    const entry = findComponentEntry(library, componentMeta.id)
+    if (entry === undefined)
+        throw new Error(`No registry entry for external component "${componentMeta.id}" (package "${identity.package}", export "${identity.exportName}") - the host application must register the real component in ComponentLibraryData`)
     return entry.component
 }
 
@@ -168,7 +188,7 @@ function renderInstance(node: CompositionInstance, metadata: MetadataDocument, l
                 props[propName] = callbacks[provided.name]
                 break
             case "componentRef":
-                props[propName] = resolveComponentRef(provided.value, library)
+                props[propName] = resolveComponentRef(provided.value, library, metadata)
                 break
             case "richText":
                 props[propName] = renderRichText(provided.value)

@@ -336,7 +336,10 @@ export function computeComponentRefPalette(
     const rules = resolvePropSlotRules(hostComponent, propName)
     if (rules.itemRule?.slot?.kind !== "componentRef") return []
     return metadata.components.map(component => {
-        const identity: ComponentIdentity = {source: "project", id: component.id}
+        // Real bug fixed (phase 4 demo work surfaced it): this always built a project identity,
+        // even for a component whose own `.external` field is set, so an external component could
+        // never appear as a valid componentRef candidate regardless of its accepts-list membership.
+        const identity: ComponentIdentity = component.external ?? {source: "project", id: component.id}
         return {component, result: checkSlotValue(rules.itemRule, identity, {library, currentItemCount: 0, currentNonVoidCount: 0})}
     })
 }
