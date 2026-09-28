@@ -1,0 +1,19 @@
+/* Real CSS asset (docs/claude-handoff.md gate C asset-loader closure): a
+   genuine @font-face pointing at a genuine, valid TTF font
+   (branded-font.ttf, built with fontTools during development - not a stub)
+   plus a background-image referencing a genuine 1x1 PNG (logo.png). Proves
+   esbuild's built-in CSS loader rewrites *both* an @font-face url() and a
+   background-image url() to the hashed "file"-loader output next to
+   bundle.js, not just a plain JS `import` specifier. */
+@font-face {
+    font-family: "ReactiveForgeTestFont";
+    src: url("./branded-font.ttf") format("truetype");
+    font-weight: normal;
+    font-style: normal;
+}
+
+.branded {
+    font-family: "ReactiveForgeTestFont", sans-serif;
+    background-image: url("./logo.png");
+    background-repeat: no-repeat;
+}

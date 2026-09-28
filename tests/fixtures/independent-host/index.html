@@ -9,6 +9,11 @@
     - the portable metadata document sitting next to it
       (../bundle-project/out/metadata.json)
 
+  host.mjs also loads the `bundle.css` sibling and renders the "Branded"
+  component (real image + real @font-face font, both routed through
+  esbuild's "file" loader configured in bundleLibrary) alongside "Greeter",
+  proving the asset-loader path visually, not just at the JS-text level.
+
   React/ReactDOM are supplied by the host, not the bundle (bundleLibrary in
   packages/codegen/src/bundle.ts marks them `external`). This fixture
   supplies them via an import map pointing at esm.sh CDN builds, one of the

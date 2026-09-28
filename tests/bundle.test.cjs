@@ -95,8 +95,57 @@ test('forge bundle produces a standalone browser ESM bundle that excludes unrela
     for (const specifier of importSpecifiers) {
       assert.ok(allowed.has(specifier), `unexpected non-external import left in bundle: ${specifier}`);
     }
-    assert.ok(!bundleText.includes('"./'), 'no relative source-project import survives in the bundled output');
     assert.ok(!bundleText.includes('"../'), 'no relative source-project import survives in the bundled output');
+
+    // --- Asset loaders (image/font extensions, closing the previously
+    // documented gap - see packages/codegen/src/bundle.ts's assetLoaders) ---
+    // Every emitted output file besides bundle.js/bundle.css/index.ts/
+    // metadata.json/__reactive_forge_files is one of esbuild's "file"-loader
+    // asset copies (Branded.tsx's logo.png + Branded.css's branded-font.ttf,
+    // see tests/fixtures/bundle-project/src/components/Branded.{tsx,css}).
+    const nonAssetOutputs = new Set(['bundle.js', 'bundle.css', 'index.ts', 'metadata.json', '__reactive_forge_files']);
+    const assetFileNames = fs.readdirSync(fixtureOutDir).filter(name => !nonAssetOutputs.has(name));
+    assert.ok(assetFileNames.some(name => /^logo-.*\.png$/.test(name)), 'a hashed copy of logo.png was written to the output directory');
+    assert.ok(assetFileNames.some(name => /^branded-font-.*\.ttf$/.test(name)), 'a hashed copy of branded-font.ttf was written to the output directory');
+
+    // The asset files are genuinely present with real content, not just
+    // referenced by name (a PNG's magic bytes, a TTF's sfnt version tag).
+    const logoFile = assetFileNames.find(name => /^logo-.*\.png$/.test(name));
+    const logoBytes = fs.readFileSync(path.join(fixtureOutDir, logoFile));
+    assert.deepEqual([...logoBytes.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 'emitted logo file is a real PNG (correct magic bytes)');
+    const fontFile = assetFileNames.find(name => /^branded-font-.*\.ttf$/.test(name));
+    const fontBytes = fs.readFileSync(path.join(fixtureOutDir, fontFile));
+    assert.equal(fontBytes.readUInt32BE(0), 0x00010000, 'emitted font file is a real sfnt/TrueType font (correct version tag)');
+
+    // bundle.js was actually rewritten by esbuild to reference the hashed
+    // output filename, not the original source-relative path - proving a
+    // real loader rewrite happened rather than assets coincidentally ending
+    // up alongside the bundle.
+    assert.ok(!bundleText.includes('"./logo.png"'), 'bundle.js must not reference the original, unhashed source asset path');
+    assert.ok(bundleText.includes(`"./${logoFile}"`), 'bundle.js must reference the actual hashed logo filename esbuild emitted');
+
+    // Every remaining relative string literal left in bundle.js is one of
+    // the known emitted asset filenames (the "file" loader's own rewritten
+    // reference) - refines, rather than removes, the prior blanket "no
+    // relative path survives" check now that legitimate asset references
+    // exist (they didn't when that check was first written).
+    const relativeStringLiterals = [...bundleText.matchAll(/["'](\.\/[^"']*)["']/g)].map(m => m[1]);
+    assert.ok(relativeStringLiterals.length > 0, 'bundle.js contains at least one rewritten relative asset reference');
+    for (const literal of relativeStringLiterals) {
+      const name = literal.slice(2);
+      assert.ok(assetFileNames.includes(name), `unexpected relative reference left in bundle.js: ${literal} (not a known emitted asset)`);
+    }
+
+    // bundle.css: both the @font-face url() and the background-image url()
+    // must have been rewritten to the same hashed asset filenames - proving
+    // esbuild's CSS loader, not just its JS loader, performs the rewrite.
+    const cssPath = path.join(fixtureOutDir, 'bundle.css');
+    assert.ok(fs.existsSync(cssPath), 'bundle.css sibling was produced (Branded.css is reached from Branded.tsx)');
+    const cssText = fs.readFileSync(cssPath, 'utf8');
+    assert.ok(cssText.includes('@font-face'), 'bundle.css keeps the @font-face rule');
+    assert.ok(cssText.includes(`url("./${fontFile}")`), 'bundle.css @font-face references the actual hashed font filename esbuild emitted');
+    assert.ok(cssText.includes(`url("./${logoFile}")`), 'bundle.css background-image references the actual hashed logo filename esbuild emitted');
+    assert.ok(!cssText.includes('branded-font.ttf"'), 'bundle.css must not reference the original, unhashed source font path');
 
     // --- Real render, proven in Node (fallback per docs/claude-handoff.md
     // gate C: "run the bundle in Node with a DOM-shimming approach ... that
@@ -134,6 +183,22 @@ test('forge bundle produces a standalone browser ESM bundle that excludes unrela
     const { renderToStaticMarkup } = require('react-dom/server');
     const html = renderToStaticMarkup(React.createElement(Component, { name: 'Node Host', times: 2 }));
     assert.equal(html, '<div data-testid="greeter"><span>Hello, Node Host!</span><span>Hello, Node Host!</span></div>');
+
+    // Real render of the asset-using component too: proves the rewritten
+    // `logo_default` import (the "file"-loader output, asserted above) is a
+    // usable string value at render time, not just present in the source
+    // text.
+    const brandedFile = registry.components.files.find(f => f.path.endsWith('Branded'));
+    assert.ok(brandedFile, 'registry contains the Branded file entry');
+    const BrandedComponent = brandedFile.components.Branded.component;
+    const brandedHtml = renderToStaticMarkup(React.createElement(BrandedComponent, { label: 'Asset Proof' }));
+    // React's DOM renderer auto-emits an image preload <link> ahead of an
+    // <img> during server rendering - unrelated to the asset-loader proof,
+    // expected here rather than suppressed.
+    assert.equal(
+      brandedHtml,
+      `<link rel="preload" as="image" href="./${logoFile}"/><div data-testid="branded" class="branded"><img data-testid="branded-logo" src="./${logoFile}" alt="" width="1" height="1"/><span data-testid="branded-label">Asset Proof</span></div>`
+    );
   } finally {
     cleanFixtureOutput();
   }
