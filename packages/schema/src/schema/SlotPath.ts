@@ -11,6 +11,8 @@ import {BooleanSchema} from "@/schema/Boolean";
 import {equals} from "@/schema/equality";
 import {schemaFromJson} from "@/schema/utils";
 import {Diagnostic, PropMetadata} from "@/schema/metadata";
+import {ReactNodeSchema} from "@/schema/ReactNode";
+import {ComponentTypeSchema} from "@/schema/ComponentType";
 
 // Path addressing, docs/slot-contract.md section 2.
 
@@ -177,3 +179,30 @@ export function resolvePath(props: Record<string, PropMetadata>, path: SlotPath)
 }
 
 export {isDiagnostic as isPathResolutionDiagnostic}
+
+/**
+ * `docs/slot-contract-recursive.md` section 1.6: a pure, recursive, document-independent property
+ * of a `Schema` alone — `false` for `ReactNodeSchema`/`ComponentTypeSchema` (the only two
+ * slot-domain leaf schema kinds), `true` for every primitive schema, and for `ObjectSchema`/
+ * `ArraySchema`/`UnionSchema` iff every reachable member/property/index/tuple type is itself
+ * `isSlotFree`. This is the sole, minor, explicitly-scoped exception to section 6's "packages/schema
+ * needs zero changes" — section 1.6 calls it out by name as belonging here, alongside
+ * `stripNullish`/`resolveSegment`, despite that general summary. Used by editor-authoring
+ * convention (deciding when a document subtree may safely collapse to a single `"leaf"`
+ * `CompositionValue` rather than be recursively decomposed) — not called anywhere in this
+ * function's own module, and not a correctness precondition for validation (section 2's traversal
+ * drives entirely off `CompositionValue.kind`, never off this helper).
+ */
+export function isSlotFree(schema: Schema): boolean {
+    if (schema instanceof ReactNodeSchema || schema instanceof ComponentTypeSchema) return false
+    if (schema instanceof UnionSchema) return schema.types.every(isSlotFree)
+    if (schema instanceof ObjectSchema) {
+        return Object.values(schema.properties).every(p => isSlotFree(p.schema))
+            && (schema.indexType === undefined || isSlotFree(schema.indexType))
+    }
+    if (schema instanceof ArraySchema) {
+        return schema.tupleTypes.every(isSlotFree)
+            && (schema.indexType === undefined || isSlotFree(schema.indexType))
+    }
+    return true
+}

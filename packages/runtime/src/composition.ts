@@ -1,58 +1,90 @@
-import type {ComponentIdentity, RichTextValueJson, ValueJson} from "@reactive-forge/schema"
+import type {ComponentIdentity, RichTextValueJson, ValueJson, VariantLiteral} from "@reactive-forge/schema"
 
-// Composition document contract, v2 (docs/slot-contract.md section 7, replacing the v1 shape gate
-// D, part 1 introduced - see docs/development-plan.md point 4 for the original v1 rationale, kept
-// below as the `...V1` types for migration/reference).
+// Composition document contract, v3 (docs/slot-contract-recursive.md), extending the v2 shape
+// docs/slot-contract.md section 7 introduced. See docs/slot-contract-recursive.md section 7.1.
 //
-// VERSIONING/NAMING DECISION (per the phase-2 handoff, item 1): the plain, unsuffixed names
-// (`CompositionDocument`, `CompositionInstance`, `CompositionPropValue`) are REPURPOSED to mean the
-// v2 shape from this point forward - matching `packages/schema/src/schema/metadata.ts`'s own
-// `MetadataDocumentV1`/`MetadataDocumentV2` precedent (the v1 shape there is the suffixed one, the
-// unsuffixed `MetadataDocument` name already meant "whatever the current contract version is"). The
-// old v1 shape is kept, unchanged, under `CompositionDocumentV1`/`CompositionInstanceV1`/
-// `CompositionNodeV1`/`CompositionTextV1`/`CompositionVoidV1`/`CompositionPropValueV1` purely so
-// `migrateCompositionDocumentV1ToV2` (validate.ts) has a real input type to document against; no
-// other function in this package accepts the V1 shape.
+// VERSIONING/NAMING DECISION (per docs/slot-contract-recursive.md section 7.1, applying the SAME
+// precedent this file's own v1->v2 comment already documented a second time): the plain,
+// unsuffixed names (`CompositionDocument`, `CompositionInstance`, `CompositionPropValue`) are
+// REPURPOSED again, now to mean the v3 shape. The v2 shape is kept, unchanged, under
+// `CompositionDocumentV2`/`CompositionInstanceV2`/`CompositionPropValueV2` purely so
+// `migrateCompositionDocumentV2ToV3` (validate.ts) has a real input type to document against, and
+// so any straggling v2-shaped call site can still reference the old shape explicitly. No function
+// in this package other than that migration accepts the V2 shape.
 //
-// BLAST RADIUS (see the report handed back to the coordinator): `packages/editor/src/preview.ts`
-// and `packages/runtime/src/export.ts` both import the plain names and consume the v1 field shape
-// directly (`node.id`, `node.children`, `CompositionPropValue`'s two-variant union with no `kind`
-// discriminant guard for the three new variants). Repurposing the names means those two files no
-// longer type-check against the new exports, and - since this repo's tests run through a
-// transpile-only loader (tests/source-loader.cjs), not real type-checking - their existing tests
-// keep *running* but exercise the wrong fields at runtime (`node.id` is now `undefined` on a v2
-// instance, `node.children` is not a field on `CompositionInstance` at all) and will fail with
-// wrong output rather than a compile error. This is a real, expected integration cost for phase 3
-// to resolve (out of this file's ownership) - not something this file works around.
+// `CompositionSlotValue`/`CompositionSlotItem` are BYTE-IDENTICAL to their v2 definitions
+// (docs/slot-contract-recursive.md section 1.1's explicit instruction) — they already correctly
+// express "an ordered, independently-identified list of rendered nodes" regardless of how deep in
+// the tree a `"nodes"` position sits; nothing about their own shape needed to change.
+//
+// BLAST RADIUS (unchanged in kind from the v1->v2 transition, now v2->v3): `packages/editor/src/
+// preview.ts` and `packages/editor/src/slots.ts` both import the plain names and consume the v2
+// field shape directly (`CompositionPropValue`'s five-variant union with a `"value"` kind that no
+// longer exists on the v3 type, `InstancePath`'s reliance on the old flat prop-value shape). Since
+// this repo's tests run through a transpile-only loader (tests/source-loader.cjs), not real
+// type-checking, `packages/editor`'s existing tests keep *running* but exercise the wrong fields at
+// runtime. This is expected, real integration cost for the next worker (addressing generalization,
+// docs/slot-contract-recursive.md section 3) to resolve — not something this file works around.
 
 /**
- * A single prop value slot on a v2 composition instance. Two kinds unchanged from v1
- * (`"value"`/`"callback"`), plus three new kinds per docs/slot-contract.md section 7:
- *
- * - `"componentRef"`: a `React.ComponentType<Props>` prop - a `ComponentIdentity`, resolved
- *   through the registry at render time and passed as the *raw constructor*, never wrapped in
- *   `createElement`/invoked (contract section 9).
- * - `"richText"`: a `richText`-policy `ReactNode` prop - a closed, small node/mark tree (see
- *   `RichTextValueJson` in `@reactive-forge/schema`), rendered through one fixed, non-overridable
- *   mapping (`renderRichText` in render.ts).
- * - `"nodes"`: an `any`/`components`-policy `ReactNode` prop, INCLUDING `children` - v2 has no
- *   special sibling `children` field at all (see "children is no longer a special sibling field"
- *   below); a component's `children` prop is addressed and stored exactly like any other
- *   `ReactNode`-domain prop, `props["children"] = {kind: "nodes", value: {items: [...]}}`.
+ * A value at some resolved `SlotPath` inside a v3 composition document — the recursive value model,
+ * docs/slot-contract-recursive.md section 1.1. Every kind is an explicit, self-describing
+ * discriminant: a reader never infers structure from what's inside a node, it reads `kind` and
+ * knows immediately how to recurse.
  */
-export type CompositionPropValue =
-    | { kind: "value", value: ValueJson }
-    | { kind: "callback", name: string }
+export type CompositionValue =
+    // Ordinary, non-slot-domain content. Serializes through the existing, UNCHANGED
+    // ValueJson/fromValueJson — primitives, plain objects, plain arrays, dates, etc. A "leaf" node
+    // is a claim: "resolvePath at this exact SlotPath is not ReactNode/ComponentType domain, and
+    // nothing inside this ValueJson is either." Validation enforces that claim (validate.ts).
+    | { kind: "leaf", value: ValueJson }
+
+    // A nested plain object whose subtree may contain slot content at some field. Only ever valid
+    // where resolvePath resolves to an ObjectSchema.
+    | { kind: "object", fields: Record<string, CompositionValue> }
+
+    // A declared array (`resolvePath` resolves to an ArraySchema). Each entry is independently
+    // identified (`CompositionArrayItem`) and independently a full `CompositionValue`.
+    | { kind: "array", items: CompositionArrayItem[] }
+
+    // A union member has been selected. `selector` names the SAME variant discriminant
+    // `resolveVariantSegment` (SlotPath.ts) already uses. No id: a variant position has exactly one
+    // live child; selecting a different member REPLACES this whole node (section 1.5).
+    | { kind: "variant", selector: { prop: string, equals: VariantLiteral }, value: CompositionValue }
+
+    // The three existing slot-domain leaf kinds, UNCHANGED in their own inner shape from v2 — only
+    // their position in the tree generalizes (any depth, not just top-level prop).
     | { kind: "componentRef", value: ComponentIdentity }
     | { kind: "richText", value: RichTextValueJson }
     | { kind: "nodes", value: CompositionSlotValue }
 
 /**
- * v2 composition instance. `instanceId`/`componentId` split (docs/slot-contract.md section 7):
- * `instanceId` is a stable, editor-generated, persisted per-instance identity (opaque string,
- * never recomputed from position); `componentId` is what v1 called `id` - which registered
- * component this instance renders, looked up in both the `MetadataDocument` and the
- * `ComponentLibraryData` exactly as v1's `id` was.
+ * One array entry, docs/slot-contract-recursive.md section 1.3 — the type that makes "one declared
+ * array entry" and "how many rendered nodes that one entry's ReactNode holds" independently
+ * nestable concerns, closing the v2 flat-array gap. `itemId` is the same opaque, editor-generated,
+ * persisted identity concept as `CompositionSlotItem.itemId` (section 4: one unified id concept,
+ * not two) — unique within its own enclosing `items` array, never recomputed from position.
+ */
+export interface CompositionArrayItem {
+    itemId: string
+    value: CompositionValue
+}
+
+/**
+ * A single prop value on a v3 composition instance — collapsed from v2's four top-level kinds
+ * (`value`/`componentRef`/`richText`/`nodes`) to two, docs/slot-contract-recursive.md section 1.2:
+ * `"callback"` stays a sibling (never slot-domain, never nested — a function prop has no schema-tree
+ * position below it), and everything path-addressable becomes `{kind: "composed", value:
+ * CompositionValue}` — a prop's top-level value is just `CompositionValue` at `SlotPath =
+ * [propName]`, so a single recursive walker validates/renders/exports a prop's value AND everything
+ * nested inside it uniformly.
+ */
+export type CompositionPropValue =
+    | { kind: "callback", name: string }
+    | { kind: "composed", value: CompositionValue }
+
+/**
+ * v3 composition instance. `instanceId`/`componentId` split unchanged from v2.
  */
 export interface CompositionInstance {
     kind: "instance"
@@ -62,24 +94,24 @@ export interface CompositionInstance {
 }
 
 /**
- * An ordered, addressable list of slot items - the value of any `"nodes"`-kind
- * `CompositionPropValue`. Order is render/display order; reordering `items` is a pure array splice
- * that carries each item's `itemId` (and, for instance items, that instance's own `instanceId`)
- * along with it, so identity never depends on array position (docs/slot-contract.md section 7).
+ * An ordered, addressable list of slot items — the value of any `"nodes"`-kind `CompositionValue`.
+ * BYTE-IDENTICAL to v2 (docs/slot-contract-recursive.md section 1.1) — order is render/display
+ * order; reordering `items` is a pure array splice carrying each item's `itemId` (and, for instance
+ * items, that instance's own `instanceId`) along with it.
  */
 export interface CompositionSlotValue {
     items: CompositionSlotItem[]
 }
 
 /**
- * One item in a `CompositionSlotValue.items` array. `itemId` is the same kind of opaque,
- * editor-generated, persisted string as `CompositionInstance.instanceId` - stable per array-item
- * identity, unique within its enclosing `items` array.
+ * One item in a `CompositionSlotValue.items` array. BYTE-IDENTICAL to v2. `itemId` is the same
+ * kind of opaque, editor-generated, persisted string as `CompositionInstance.instanceId`/
+ * `CompositionArrayItem.itemId` — stable per array-item identity, unique within its enclosing
+ * `items` array.
  *
  * `"void"` is kept as an explicit, addressable "empty slot item" distinct from omitting an item
- * from `items` entirely - it still counts toward `items.length` for `maxItems` purposes but never
- * toward a `minItems`/required check (docs/slot-contract.md section 7, "CompositionSlotItem.kind:
- * void").
+ * from `items` entirely — it still counts toward `items.length` for `maxItems` purposes but never
+ * toward a `minItems`/required check.
  */
 export type CompositionSlotItem =
     | { itemId: string, kind: "instance", instance: CompositionInstance }
@@ -87,20 +119,61 @@ export type CompositionSlotItem =
     | { itemId: string, kind: "void" }
 
 /**
- * v2 composition document. `schemaVersion: 2` only - a bare `schemaVersion: 1` document is a
- * different type (`CompositionDocumentV1`, below) and must go through
- * `migrateCompositionDocumentV1ToV2` (validate.ts) before it is a `CompositionDocument`.
- * `validateComposition`/`renderComposition` accept `CompositionDocument | CompositionDocumentV1`
- * at the type level specifically so they can inspect `schemaVersion` at runtime and produce the
- * `"unsupported-schema-version"` diagnostic (never silently reinterpreting v1 structure) rather
- * than refusing to compile against a real on-disk v1 document.
+ * v3 composition document. `schemaVersion: 3` only — a `2` or `1` document is a different type
+ * (`CompositionDocumentV2`/`CompositionDocumentV1`, below) and must go through
+ * `migrateCompositionDocumentV2ToV3`/`migrateCompositionDocumentV1ToV2` (validate.ts) before it is a
+ * `CompositionDocument`. `validateComposition`/`renderComposition`/`exportToTsx` accept
+ * `CompositionDocument | CompositionDocumentV2 | CompositionDocumentV1` at the type level
+ * specifically so they can inspect `schemaVersion` at runtime and produce the
+ * `"unsupported-schema-version"` diagnostic (never silently reinterpreting v1/v2 structure) rather
+ * than refusing to compile against a real on-disk v1/v2 document.
  *
  * Root identity: `root` is a `CompositionInstance` like any other, with its own `instanceId` - no
- * special-cased "root has no id" exception (docs/slot-contract.md section 7, "Root identity").
+ * special-cased "root has no id" exception, unchanged from v2.
  */
 export interface CompositionDocument {
-    schemaVersion: 2
+    schemaVersion: 3
     root: CompositionInstance
+}
+
+// ---------------------------------------------------------------------------------------------
+// v2 shapes (unchanged from the phase-2/phase-3 implementation), kept only as
+// `migrateCompositionDocumentV2ToV3`'s documented input type. Nothing else in this package
+// constructs or consumes these.
+// ---------------------------------------------------------------------------------------------
+
+export type CompositionPropValueV2 =
+    | { kind: "value", value: ValueJson }
+    | { kind: "callback", name: string }
+    | { kind: "componentRef", value: ComponentIdentity }
+    | { kind: "richText", value: RichTextValueJson }
+    | { kind: "nodes", value: CompositionSlotValueV2 }
+
+export interface CompositionInstanceV2 {
+    kind: "instance"
+    instanceId: string
+    componentId: string
+    props: Record<string, CompositionPropValueV2>
+}
+
+// V2-specific slot value/item types, parametrized over CompositionInstanceV2 - kept distinct from
+// the unsuffixed (v3) CompositionSlotValue/CompositionSlotItem above, which are now parametrized
+// over the repurposed (v3) CompositionInstance. Structurally identical to the v3 shape field-by-
+// field (same "itemId"/"kind"/"instance"/"value" fields) - only the recursive "instance" field's
+// own prop-value shape differs, exactly mirroring why CompositionInstanceV1's old CompositionNodeV1
+// needed its own distinct recursive type too.
+export interface CompositionSlotValueV2 {
+    items: CompositionSlotItemV2[]
+}
+
+export type CompositionSlotItemV2 =
+    | { itemId: string, kind: "instance", instance: CompositionInstanceV2 }
+    | { itemId: string, kind: "text", value: string }
+    | { itemId: string, kind: "void" }
+
+export interface CompositionDocumentV2 {
+    schemaVersion: 2
+    root: CompositionInstanceV2
 }
 
 // ---------------------------------------------------------------------------------------------

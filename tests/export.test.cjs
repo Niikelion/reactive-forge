@@ -101,55 +101,59 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     const greeterMeta = byName(metadata, 'Greeter');
     const showcaseMeta = byName(metadata, 'ExportShowcase');
 
-    // v2 shape: "children" is an ordinary "nodes" prop (no sibling `children` field), holding a
-    // text item, a nested Greeter instance, a void item, and a nested ExportShowcase instance -
-    // covering one prop of every remaining ValueJson kind (string, number, boolean, array, object,
-    // date, bigint) plus two callback references.
+    // v3 shape: "children" is an ordinary "nodes" prop, wrapped like every other non-callback prop
+    // in {kind:"composed", value: CompositionValue} - holding a text item, a nested Greeter
+    // instance, a void item, and a nested ExportShowcase instance, covering one prop of every
+    // remaining ValueJson kind (string, number, boolean, array, object, date, bigint) as a
+    // {kind:"leaf", ...} CompositionValue, plus two callback references.
     const doc = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       root: {
         kind: 'instance',
         instanceId: 'root-card',
         componentId: cardMeta.id,
         props: {
-          title: { kind: 'value', value: { type: 'string', value: 'Export Proof' } },
+          title: { kind: 'composed', value: { kind: 'leaf', value: { type: 'string', value: 'Export Proof' } } },
           onRender: { kind: 'callback', name: 'onCardRender' },
           children: {
-            kind: 'nodes',
+            kind: 'composed',
             value: {
-              items: [
-                { itemId: 'intro', kind: 'text', value: 'Intro: ' },
-                {
-                  itemId: 'greeter-item', kind: 'instance', instance: {
-                    kind: 'instance', instanceId: 'greeter-1', componentId: greeterMeta.id,
-                    props: {
-                      name: { kind: 'value', value: { type: 'string', value: 'Exported Host' } },
-                      times: { kind: 'value', value: { type: 'number', value: 2 } },
+              kind: 'nodes',
+              value: {
+                items: [
+                  { itemId: 'intro', kind: 'text', value: 'Intro: ' },
+                  {
+                    itemId: 'greeter-item', kind: 'instance', instance: {
+                      kind: 'instance', instanceId: 'greeter-1', componentId: greeterMeta.id,
+                      props: {
+                        name: { kind: 'composed', value: { kind: 'leaf', value: { type: 'string', value: 'Exported Host' } } },
+                        times: { kind: 'composed', value: { kind: 'leaf', value: { type: 'number', value: 2 } } },
+                      },
                     },
                   },
-                },
-                { itemId: 'void-item', kind: 'void' },
-                {
-                  itemId: 'showcase-item', kind: 'instance', instance: {
-                    kind: 'instance', instanceId: 'showcase-1', componentId: showcaseMeta.id,
-                    props: {
-                      title: { kind: 'value', value: { type: 'string', value: 'Showcase' } },
-                      count: { kind: 'value', value: { type: 'number', value: 7 } },
-                      active: { kind: 'value', value: { type: 'boolean', value: true } },
-                      tags: { kind: 'value', value: { type: 'array', value: [
-                        { type: 'string', value: 'a' },
-                        { type: 'string', value: 'b' },
-                      ] } },
-                      meta: { kind: 'value', value: { type: 'object', value: {
-                        source: { type: 'string', value: 'fixture' },
-                      } } },
-                      when: { kind: 'value', value: { type: 'date', value: '2024-01-01T00:00:00.000Z' } },
-                      big: { kind: 'value', value: { type: 'bigint', value: '123456789012345' } },
-                      onActivate: { kind: 'callback', name: 'onShowcaseActivate' },
+                  { itemId: 'void-item', kind: 'void' },
+                  {
+                    itemId: 'showcase-item', kind: 'instance', instance: {
+                      kind: 'instance', instanceId: 'showcase-1', componentId: showcaseMeta.id,
+                      props: {
+                        title: { kind: 'composed', value: { kind: 'leaf', value: { type: 'string', value: 'Showcase' } } },
+                        count: { kind: 'composed', value: { kind: 'leaf', value: { type: 'number', value: 7 } } },
+                        active: { kind: 'composed', value: { kind: 'leaf', value: { type: 'boolean', value: true } } },
+                        tags: { kind: 'composed', value: { kind: 'leaf', value: { type: 'array', value: [
+                          { type: 'string', value: 'a' },
+                          { type: 'string', value: 'b' },
+                        ] } } },
+                        meta: { kind: 'composed', value: { kind: 'leaf', value: { type: 'object', value: {
+                          source: { type: 'string', value: 'fixture' },
+                        } } } },
+                        when: { kind: 'composed', value: { kind: 'leaf', value: { type: 'date', value: '2024-01-01T00:00:00.000Z' } } },
+                        big: { kind: 'composed', value: { kind: 'leaf', value: { type: 'bigint', value: '123456789012345' } } },
+                        onActivate: { kind: 'callback', name: 'onShowcaseActivate' },
+                      },
                     },
                   },
-                },
-              ],
+                ],
+              },
             },
           },
         },
@@ -224,7 +228,7 @@ test('exportToTsx serializes "nodes"/"richText"/"componentRef" slot values ident
     const richTextShowcaseMeta = byName(metadata, 'RichTextShowcase');
 
     const doc = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       root: {
         kind: 'instance',
         instanceId: 'root-slotcard',
@@ -232,56 +236,76 @@ test('exportToTsx serializes "nodes"/"richText"/"componentRef" slot values ident
         props: {
           // Unannotated ReactNode (no explicit rule) - the synthesized AnyNodePolicy default has
           // `multiple: true`, so even this single-item slot is Fragment-wrapped.
-          header: { kind: 'nodes', value: { items: [{ itemId: 'h1', kind: 'text', value: 'Header text' }] } },
-          // A real each()-policy declared array ("actions": ReactNode[], collection maxItems: 3),
-          // exercising a "nodes" slot with more than one item: a nested component instance AND a
-          // text item, in order.
+          header: { kind: 'composed', value: { kind: 'nodes', value: { items: [{ itemId: 'h1', kind: 'text', value: 'Header text' }] } } },
+          // "actions": ReactNode[] is a DECLARED ARRAY (collection maxItems: 3, each() maxItems: 1
+          // per entry) - per docs/slot-contract-recursive.md section 1.3, this is "array"-kind at
+          // the top with 2 independent CompositionArrayItem entries, each entry's OWN value
+          // directly "nodes"-kind (no intervening object, since each() lands straight on
+          // ReactNode) - NOT a single flat "nodes" value the way v2 represented the whole prop.
           actions: {
-            kind: 'nodes',
+            kind: 'composed',
             value: {
+              kind: 'array',
               items: [
-                { itemId: 'a1', kind: 'instance', instance: { kind: 'instance', instanceId: 'greeter-action', componentId: greeterMeta.id, props: { name: { kind: 'value', value: { type: 'string', value: 'Action Greeter' } } } } },
-                { itemId: 'a2', kind: 'text', value: 'Second action' },
+                {
+                  itemId: 'a1',
+                  value: { kind: 'nodes', value: { items: [
+                    { itemId: 'a1-node', kind: 'instance', instance: { kind: 'instance', instanceId: 'greeter-action', componentId: greeterMeta.id, props: { name: { kind: 'composed', value: { kind: 'leaf', value: { type: 'string', value: 'Action Greeter' } } } } } },
+                  ] } },
+                },
+                {
+                  itemId: 'a2',
+                  value: { kind: 'nodes', value: { items: [{ itemId: 'a2-node', kind: 'text', value: 'Second action' }] } },
+                },
               ],
             },
           },
           // componentRef: a bare identifier expression, resolved through the registry the same way
           // render.ts's resolveComponentRef does - never JSX-wrapped, never called.
-          icon: { kind: 'componentRef', value: { source: 'project', id: slotIconMeta.id } },
+          icon: { kind: 'composed', value: { kind: 'componentRef', value: { source: 'project', id: slotIconMeta.id } } },
           // richText, matching SlotCard's own real policy (marks: ["bold"] only, blocks.lists: false).
           caption: {
-            kind: 'richText',
-            value: { kind: 'richText', version: 1, inline: false, nodes: [
-              { type: 'paragraph', children: [{ type: 'text', text: 'Bold caption', marks: ['bold'] }] },
-            ] },
+            kind: 'composed',
+            value: {
+              kind: 'richText',
+              value: { kind: 'richText', version: 1, inline: false, nodes: [
+                { type: 'paragraph', children: [{ type: 'text', text: 'Bold caption', marks: ['bold'] }] },
+              ] },
+            },
           },
           // "children" - an ordinary "nodes" prop like any other (no special sibling field), here
           // holding a nested RichTextShowcase instance whose own richText prop covers BOTH bold and
           // italic marks together, plus both paragraph and list blocks.
           children: {
-            kind: 'nodes',
+            kind: 'composed',
             value: {
-              items: [
-                {
-                  itemId: 'c1', kind: 'instance', instance: {
-                    kind: 'instance', instanceId: 'richtext-1', componentId: richTextShowcaseMeta.id,
-                    props: {
-                      body: {
-                        kind: 'richText',
-                        value: { kind: 'richText', version: 1, inline: false, nodes: [
-                          { type: 'paragraph', children: [{ type: 'text', text: 'Bold text', marks: ['bold'] }] },
-                          { type: 'bulletList', items: [{ type: 'listItem', children: [{ type: 'text', text: 'Italic item', marks: ['italic'] }] }] },
-                        ] },
+              kind: 'nodes',
+              value: {
+                items: [
+                  {
+                    itemId: 'c1', kind: 'instance', instance: {
+                      kind: 'instance', instanceId: 'richtext-1', componentId: richTextShowcaseMeta.id,
+                      props: {
+                        body: {
+                          kind: 'composed',
+                          value: {
+                            kind: 'richText',
+                            value: { kind: 'richText', version: 1, inline: false, nodes: [
+                              { type: 'paragraph', children: [{ type: 'text', text: 'Bold text', marks: ['bold'] }] },
+                              { type: 'bulletList', items: [{ type: 'listItem', children: [{ type: 'text', text: 'Italic item', marks: ['italic'] }] }] },
+                            ] },
+                          },
+                        },
+                        // A bare ReactNode "nodes" slot with an EXPLICIT rule (`{kind: "any",
+                        // maxItems: 1}`, no `multiple` key) and exactly one item - the single-item,
+                        // non-multiple case that stays bare (no Fragment), unlike "header"'s
+                        // unannotated (multiple:true-by-default) single item above.
+                        footer: { kind: 'composed', value: { kind: 'nodes', value: { items: [{ itemId: 'f1', kind: 'text', value: 'Footer text' }] } } },
                       },
-                      // A bare ReactNode "nodes" slot with an EXPLICIT rule (`{kind: "any",
-                      // maxItems: 1}`, no `multiple` key) and exactly one item - the single-item,
-                      // non-multiple case that stays bare (no Fragment), unlike "header"'s
-                      // unannotated (multiple:true-by-default) single item above.
-                      footer: { kind: 'nodes', value: { items: [{ itemId: 'f1', kind: 'text', value: 'Footer text' }] } },
                     },
                   },
-                },
-              ],
+                ],
+              },
             },
           },
         },
@@ -357,16 +381,16 @@ test('exportToTsx refuses an invalid document instead of silently serializing it
     // tests/fixtures/bundle-project/src/components/SlotCard.tsx) - pointing it at Greeter instead
     // is a real, genuine policy violation, not a hand-rolled edge case.
     const invalidDoc = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       root: {
         kind: 'instance',
         instanceId: 'root-invalid',
         componentId: slotCardMeta.id,
         props: {
-          header: { kind: 'nodes', value: { items: [] } },
-          actions: { kind: 'nodes', value: { items: [] } },
-          icon: { kind: 'componentRef', value: { source: 'project', id: greeterMeta.id } },
-          caption: { kind: 'richText', value: { kind: 'richText', version: 1, inline: false, nodes: [] } },
+          header: { kind: 'composed', value: { kind: 'nodes', value: { items: [] } } },
+          actions: { kind: 'composed', value: { kind: 'nodes', value: { items: [] } } },
+          icon: { kind: 'composed', value: { kind: 'componentRef', value: { source: 'project', id: greeterMeta.id } } },
+          caption: { kind: 'composed', value: { kind: 'richText', value: { kind: 'richText', version: 1, inline: false, nodes: [] } } },
         },
       },
     };
