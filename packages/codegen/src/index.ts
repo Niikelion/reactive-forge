@@ -7,6 +7,7 @@ import {createLogger} from "./utils.js";
 import type {AnnotationSourcesConfig} from "./slotTypes.js";
 
 export type {AnnotationSourcesConfig} from "./slotTypes.js";
+export type {ClassBinding} from "./classBindings.js";
 
 // docs/slot-contract.md section 5, "Annotation source discovery (config)". `metadataModule`
 // entries and `overrideSources` are resolved to absolute paths by fillConfig below, the same
@@ -90,7 +91,7 @@ export const createCodegen = async (config: CodegenConfig, logger?: ReturnType<t
     }
 
     const logFinished = logger.timing("Extracted components", true)
-    const components = extractComponents(project, config.componentRoots)
+    const components = extractComponents(project, config.componentRoots, config)
     await generateFiles(project, components, config, logger)
     logFinished()
 }

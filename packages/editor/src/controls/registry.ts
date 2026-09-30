@@ -12,6 +12,7 @@ import {DateControl} from "./DateControl.js"
 import {JsonControl} from "./JsonControl.js"
 import {FunctionControl} from "./FunctionControl.js"
 import {UnionControl} from "./UnionControl.js"
+import {InstanceControl} from "./InstanceControl.js"
 
 /**
  * The built-in control for every schema `type` tag that has one. `array`/
@@ -23,6 +24,7 @@ import {UnionControl} from "./UnionControl.js"
  * nothing here is a hard limitation of the mechanism.
  */
 export const defaultControls: ControlOverrides = {
+    instance: InstanceControl,
     string: StringControl,
     number: NumberControl,
     boolean: BooleanControl,

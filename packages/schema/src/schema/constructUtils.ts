@@ -11,6 +11,7 @@ function constructsEquals(a: ValueConstruct, b: ValueConstruct): boolean {
     if (a.type !== b.type) return false
 
     switch (a.type) {
+        case "instance": return b.type === "instance" && a.adapterId === b.adapterId && a.version === b.version && constructsEquals(a.value, b.value)
         case "void":
         case "null":
         case "undefined": return true

@@ -17,6 +17,7 @@ import {VoidSchema} from "@/schema/Void";
 import {UnionSchema} from "@/schema/Union";
 import {FunctionSchema} from "@/schema/Function";
 import {ComponentTypeSchema} from "@/schema/ComponentType";
+import {InstanceSchema} from "@/schema/Instance";
 
 interface SchemaModule {
     fromJson: SchemaFactory
@@ -25,6 +26,7 @@ interface SchemaModule {
 }
 
 export const commonTypes: Record<string, SchemaModule> = {
+    instance: InstanceSchema,
     never: NeverSchema,
     unknown: UnknownSchema,
     null: NullSchema,

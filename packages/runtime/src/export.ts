@@ -67,6 +67,7 @@ import {CompositionValidationError} from "./render.js"
 // below), never by walking a leaf's own `ValueJson`.
 
 export interface ExportOptions {
+    valueAdapters?: import("@reactive-forge/schema").ValueAdapterRegistry
     /**
      * Name of the exported component function. Default: "ExportedComposition".
      */
@@ -109,12 +110,13 @@ export interface ExportOptions {
  * component registration, the legacy-`"element"` ban) still runs in full.
  */
 export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument, library: ComponentLibraryData, options: ExportOptions = {}): string {
+    if (options.valueAdapters) library = {...library, valueAdapters: {...library.valueAdapters, ...options.valueAdapters}}
     const schemaVersion: number = doc.schemaVersion
     if (schemaVersion === 1)
         throw new Error(`exportToTsx: composition schemaVersion 1 is not accepted by the v3 exporter; call migrateCompositionDocumentV1ToV2(doc) then migrateCompositionDocumentV2ToV3(doc, metadata) first`)
     if (schemaVersion === 2)
         throw new Error(`exportToTsx: composition schemaVersion 2 is not accepted by the v3 exporter; call migrateCompositionDocumentV2ToV3(doc, metadata) first`)
-    if (schemaVersion !== 3)
+    if (schemaVersion !== 3 && schemaVersion !== 4)
         throw new Error(`exportToTsx: unsupported composition schemaVersion: ${String(schemaVersion)}`)
 
     const validation = validateComposition(doc, metadata, library)
@@ -127,8 +129,27 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
     const referencedIdentities = new Map<ImportKey, ComponentIdentity>()
     collectInstanceComponentIds(doc.root, referencedIdentities, metadata)
     const imports = buildImportTable(referencedIdentities, metadata)
+    const used = new Set([...imports.values()].map(entry => entry.localName))
+    used.add(exportedComponentName)
+    used.add(callbacksParamName)
+    const factories = new Map<string, ImportEntry>()
+    visitInstanceValues(doc.root, value => {
+        const key = `adapter:${value.adapterId}`
+        if (imports.has(key)) return
+        const adapter = findValueAdapter(value.adapterId, value.version, library.valueAdapters)
+        if (!adapter.export) throw new Error(`Value adapter ${adapter.id} has no export factory`)
+        const factoryKey = JSON.stringify([adapter.export.module, adapter.export.exportName, adapter.export.isDefault ?? false])
+        const existing = factories.get(factoryKey)
+        if (existing) { imports.set(key, existing); return }
+        let localName = "createValue"
+        for (let n = 1; used.has(localName); n++) localName = `createValue${String(n)}`
+        used.add(localName)
+        const entry: ImportEntry = {localName, identity: {source: "external", package: adapter.export.module, exportName: adapter.export.exportName, isDefault: adapter.export.isDefault ?? false}}
+        imports.set(key, entry)
+        factories.set(factoryKey, entry)
+    })
 
-    const importLines = [...imports.values()]
+    const importLines = [...new Set(imports.values())]
         .sort((a, b) => a.localName.localeCompare(b.localName))
         .map(entry => formatImportStatement(entry, resolveImportPath))
 
@@ -337,6 +358,11 @@ function serializeElementExpression(element: {path: string, name: string, args: 
 
 function serializeValueExpression(value: ValueJson, imports: Map<ImportKey, ImportEntry>, metadata: MetadataDocument): string {
     switch (value.type) {
+        case "instance": {
+            const entry = imports.get(`adapter:${value.adapterId}`)
+            if (!entry) throw new Error(`Missing export factory for ${value.adapterId}`)
+            return `${entry.localName}(${serializeValueExpression(value.value, imports, metadata)})`
+        }
         case "void":
         case "undefined":
             return "undefined"
@@ -530,3 +556,4 @@ function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument
         .map(([name, value]) => serializePropFragment(name, value, meta, imports, metadata, callbacksParamName))
     return `<${entry.localName}${propFragments.length > 0 ? ` ${propFragments.join(" ")}` : ""} />`
 }
+import {findValueAdapter, visitInstanceValues} from "./adapters.js"

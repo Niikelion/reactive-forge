@@ -96,17 +96,14 @@ function instancePath(propName, itemId) {
 }
 
 // For a declared-array per-entry slot (e.g. `actions: ReactNode[]`, docs/slot-contract-recursive.md
-// section 8.3): packages/editor/src/slots.ts's insertSlotItem/moveSlotItem represent the simple
-// "one declared entry = exactly one rendered node" case by giving the entry's own
-// CompositionArrayItem.itemId the SAME value as its single inner CompositionSlotItem.itemId - so
-// addressing that one node is prop -> arrayItem(id) -> slotItem(SAME id) -> instance.
-function arrayEntryInstancePath(propName, itemId) {
-  return [{ kind: 'prop', propName }, { kind: 'arrayItem', itemId }, { kind: 'slotItem', itemId }, { kind: 'instance' }];
+// section 8.3): array entries and their rendered nodes have independent stable IDs.
+// Older fixture documents happen to reuse the same ID at both levels; newly inserted
+// entries pass their distinct entry ID explicitly.
+function arrayEntryInstancePath(propName, itemId, entryId = itemId) {
+  return [{ kind: 'prop', propName }, { kind: 'arrayItem', itemId: entryId }, { kind: 'slotItem', itemId }, { kind: 'instance' }];
 }
 
-// Flattens a declared-array per-entry prop's stored CompositionSlotItems, mirroring exactly how
-// packages/editor/src/slots.ts's own readSlotEntries reads the "one entry = one node" case -
-// used here only to make assertions read naturally as a flat item list.
+// Flatten only for assertions about rendered nodes. Operations keep the actual array entries.
 function arrayEntries(prop) {
   return prop.value.items.flatMap((entry) => (entry.value.kind === 'nodes' ? entry.value.value.items : []));
 }
@@ -399,7 +396,9 @@ test('editor slot outlets: palette filtering, insertion, rejection, reordering, 
     // (and the nested instance's own instanceId). ---
     const idsBefore = arrayEntries(doc3.root.props.actions).map((i) => i.itemId);
     const instanceIdBefore = arrayEntries(doc3.root.props.actions)[0].instance.instanceId;
-    const reordered = editor.moveSlotItem(doc3, [], 'actions', 0, 2);
+    const reorderResult = editor.moveSlotItem(doc3, metadata, registry, [], 'actions', 0, 2);
+    assert.equal(reorderResult.ok, true, JSON.stringify(reorderResult));
+    const reordered = reorderResult.document;
     const idsAfter = arrayEntries(reordered.root.props.actions).map((i) => i.itemId);
     assert.deepEqual(new Set(idsAfter), new Set(idsBefore), 'reordering preserves the exact set of itemIds');
     assert.notDeepEqual(idsAfter, idsBefore, 'reordering actually changed the order');
@@ -411,11 +410,14 @@ test('editor slot outlets: palette filtering, insertion, rejection, reordering, 
     // A path into the moved item's own subtree still resolves correctly after reordering -
     // this is the entire point of id-based addressing over v1's child-index paths, now through
     // a declared-array per-entry slot (prop -> arrayItem -> slotItem -> instance).
-    const pathToMoved = arrayEntryInstancePath('actions', movedItem.itemId);
+    const movedEntryId = reordered.root.props.actions.value.items[2].itemId;
+    const pathToMoved = arrayEntryInstancePath('actions', movedItem.itemId, movedEntryId);
     assert.equal(editor.getInstanceAtPath(reordered, pathToMoved).instanceId, instanceIdBefore);
 
     // --- Removal ---
-    const removed = editor.removeSlotItem(reordered, [], 'actions', movedItem.itemId);
+    const removeResult = editor.removeSlotItem(reordered, metadata, registry, [], 'actions', movedEntryId);
+    assert.equal(removeResult.ok, true, JSON.stringify(removeResult));
+    const removed = removeResult.document;
     assert.equal(arrayEntries(removed.root.props.actions).length, 2);
     assert.ok(!arrayEntries(removed.root.props.actions).some((i) => i.itemId === movedItem.itemId));
     assert.equal(runtime.validateComposition(removed, metadata, registry).valid, true);
@@ -441,7 +443,9 @@ test('editor slot outlets: insertion capacity counts the FULL resulting slot, no
     slots: [{ path: ['header'], slot: { kind: 'any', maxItems: 1 }, appliedFrom: { slot: 'project' } }],
   };
   const metadata = { schemaVersion: 2, generatedAt: '2026-01-01T00:00:00.000Z', components: [hostMeta], externalLibraries: [] };
-  const library = { files: [] };
+  const library = { files: [{ path: 'virtual/Host.tsx', components: {
+    Host: { id: 'host-1', component: ({ header }) => header, args: { type: 'object', properties: {} } },
+  } }] };
   const doc = {
     schemaVersion: 3,
     root: {

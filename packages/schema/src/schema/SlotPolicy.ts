@@ -1,6 +1,7 @@
 import {ComponentIdentity} from "@/schema/ComponentIdentity";
 import {RichTextMark} from "@/schema/RichText";
 import {SlotPath} from "@/schema/SlotPath";
+import type {EditorPresentation} from "@/schema/EditorPresentation";
 
 // Slot policy types, docs/slot-contract.md sections 3-4. Plain, JSON-safe data — no React,
 // no ts-morph.
@@ -41,6 +42,7 @@ export type SlotPolicy =
 // Authoring API, section 4. `SlotRule` is what `defineComponentMetadata`/`defineLibraryMetadata`
 // calls compile down to; codegen statically ingests these (this package never parses source).
 export interface SlotRule {
+    editor?: EditorPresentation
     path: SlotPath
     collection?: { minItems?: number, maxItems?: number }
     slot?: SlotPolicy
@@ -49,6 +51,8 @@ export interface SlotRule {
 export type SlotLayer = "inferred" | "library" | "project"
 
 export interface EffectiveSlotRule {
+    editor?: EditorPresentation
+    editorAppliedFrom?: Partial<Record<keyof EditorPresentation, SlotLayer>>
     path: SlotPath
     collection?: { minItems?: number, maxItems?: number }
     slot?: SlotPolicy
@@ -86,6 +90,10 @@ export function mergeSlotPolicy(base: SlotPolicy | undefined, incoming: SlotPoli
 
 export function mergeRule(base: EffectiveSlotRule | undefined, incoming: SlotRule, layer: SlotLayer): EffectiveSlotRule {
     return {
+        ...(incoming.editor !== undefined || base?.editor !== undefined ? {
+            editor: {...base?.editor, ...incoming.editor},
+            editorAppliedFrom: {...base?.editorAppliedFrom, ...Object.fromEntries(Object.keys(incoming.editor ?? {}).map(key => [key, layer]))}
+        } : {}),
         path: incoming.path,
         collection: mergeCollection(base?.collection, incoming.collection),
         slot: mergeSlotPolicy(base?.slot, incoming.slot),

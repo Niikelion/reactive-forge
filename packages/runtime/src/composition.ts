@@ -132,7 +132,7 @@ export type CompositionSlotItem =
  * special-cased "root has no id" exception, unchanged from v2.
  */
 export interface CompositionDocument {
-    schemaVersion: 3
+    schemaVersion: 3 | 4
     root: CompositionInstance
 }
 

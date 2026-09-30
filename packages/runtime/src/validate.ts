@@ -6,7 +6,6 @@ import {
     ComponentMetadata,
     EffectiveSlotRule,
     findComponentEntry,
-    fromValueJson,
     isPathResolutionDiagnostic,
     MetadataDocument,
     ObjectSchema,
@@ -128,6 +127,7 @@ function toSlotCheckCandidate(item: CompositionSlotItem): SlotItemCandidate {
 // `"element"` node from appearing anywhere inside it, at any depth.
 // ---------------------------------------------------------------------------------------------
 function containsLegacyElement(value: ValueJson): boolean {
+    if (value.type === "instance") return containsLegacyElement(value.value)
     switch (value.type) {
         case "element":
             return true
@@ -207,7 +207,7 @@ function validateCompositionValue(
                 return
             }
             try {
-                fromValueJson(stripNullish(schema), value.value)
+                validateAdapterValue(stripNullish(schema), value.value, library.valueAdapters)
             } catch (error) {
                 diagnostics.push({severity: "error", code: "invalid-prop-value", message: error instanceof Error ? error.message : String(error), path: diagnosticPath})
             }
@@ -374,6 +374,39 @@ function validateInstance(
  * `migrateCompositionDocumentV2ToV3` for `1`), per docs/slot-contract-recursive.md section 7.2. This
  * function never branches on `schemaVersion === 1 | 2` to reinterpret the old shapes.
  */
+function validateIdentities(root: CompositionInstance, diagnostics: CompositionDiagnostic[]): void {
+    const instances = new Set<string>()
+    function identity(id: string, seen: Set<string>, path: string): void {
+        if (typeof id !== "string" || id.length === 0 || seen.has(id))
+            diagnostics.push({severity: "error", code: "invalid-identity", message: "IDs must be nonempty and unique within their identity scope", path})
+        seen.add(id)
+    }
+    function instance(node: CompositionInstance, path: string): void {
+        identity(node.instanceId, instances, path)
+        for (const [key, prop] of Object.entries(node.props))
+            if (prop.kind === "composed") value(prop.value, `${path}.props.${key}`)
+    }
+    function value(current: CompositionValue, path: string): void {
+        if (current.kind === "object") {
+            for (const [key, child] of Object.entries(current.fields)) value(child, `${path}.${key}`)
+        } else if (current.kind === "variant") value(current.value, path)
+        else if (current.kind === "array") {
+            const ids = new Set<string>()
+            for (const item of current.items) {
+                identity(item.itemId, ids, path)
+                value(item.value, `${path}.${item.itemId}`)
+            }
+        } else if (current.kind === "nodes") {
+            const ids = new Set<string>()
+            for (const item of current.value.items) {
+                identity(item.itemId, ids, path)
+                if (item.kind === "instance") instance(item.instance, `${path}.${item.itemId}`)
+            }
+        }
+    }
+    instance(root, "root")
+}
+
 export function validateComposition(
     doc: CompositionDocument | CompositionDocumentV2 | CompositionDocumentV1,
     metadata: MetadataDocument,
@@ -390,10 +423,14 @@ export function validateComposition(
         diagnostics.push({severity: "error", code: "unsupported-schema-version", message: `Composition schemaVersion 2 is not accepted by v3 APIs; call migrateCompositionDocumentV2ToV3(doc, metadata) first`, path: "root"})
         return {valid: false, diagnostics}
     }
-    if (schemaVersion !== 3) {
+    if (schemaVersion !== 3 && schemaVersion !== 4) {
         diagnostics.push({severity: "error", code: "unsupported-schema-version", message: `Unsupported composition schemaVersion: ${String(schemaVersion)}`, path: "root"})
         return {valid: false, diagnostics}
     }
+    if (schemaVersion === 3) visitInstanceValues(doc.root, () => {
+        diagnostics.push({severity: "error", code: "unsupported-schema-version", message: "Class values require composition schemaVersion 4", path: "root"})
+    })
+    validateIdentities((doc as CompositionDocument).root, diagnostics)
     validateInstance((doc as CompositionDocument).root, "root", metadata, library, callbacks, diagnostics)
     return {valid: !diagnostics.some(d => d.severity === "error"), diagnostics}
 }
@@ -703,3 +740,4 @@ export function migrateCompositionDocumentV2ToV3(doc: CompositionDocumentV2, met
     const root = migrateInstanceV2ToV3(doc.root, metadata, "root", diagnostics)
     return {document: {schemaVersion: 3, root}, diagnostics}
 }
+import {validateAdapterValue, visitInstanceValues} from "./adapters.js"
