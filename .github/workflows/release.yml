@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: release-master
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  release:
+    needs: checks
+    if: github.ref == 'refs/heads/master' && github.repository == 'Niikelion/reactive-forge'
+    runs-on: ubuntu-latest
+    environment: Production
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: npm install --global npm@11.15.0
+      - run: yarn install --immutable
+      - name: Apply pending Changesets
+        env:
+          YARN_ENABLE_IMMUTABLE_INSTALLS: false
+        run: |
+          yarn changeset version
+          yarn install
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .changeset packages package.json yarn.lock
+            git commit -m "chore: version packages"
+            git push origin HEAD:master
+          fi
+      - run: yarn install --immutable
+      # GITHUB_TOKEN pushes do not start another workflow: validate and publish
+      # the versioned checkout within this run, including recovery reruns.
+      - run: yarn build
+      - run: yarn typecheck
+      - run: yarn lint
+      - run: yarn test:regressions
+      - run: yarn check:packages
+      - name: Publish packages and create GitHub releases
+        run: node tests/support/release.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
