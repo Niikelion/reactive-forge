@@ -1,6 +1,6 @@
 # @reactive-forge/editor
 
-React controls, previews and a composition canvas built on Reactive Forge schemas. Supports nested component slots, drag-and-drop editing, rich text and class payload forms.
+React controls, previews and a composition canvas built on Reactive Forge schemas. Supports nested component slots, drag-and-drop editing, component groups and class payload forms.
 
 ```sh
 npm install @reactive-forge/editor@2 @reactive-forge/runtime@2 @reactive-forge/schema@2 react@19
@@ -8,4 +8,10 @@ npm install @reactive-forge/editor@2 @reactive-forge/runtime@2 @reactive-forge/s
 
 Core APIs include `CompositionEditor`, `ComponentPalette`, `PropControl` and `useComponentPreview`.
 
-See the [Reactive Forge](https://github.com/Niikelion/reactive-forge) and [Reactive Forge](https://github.com/Niikelion/reactive-forge).
+Palettes and insertion operations enforce the same group restrictions as runtime validation, including slots nested inside objects, arrays and union branches.
+
+Use `CompositionEditor.renderComponent` to provide host-owned component editors. Its context includes the concrete instance, stable path, rendered element and an `onChange(props)` callback. Updates validate the complete document before committing. A component registered in `forge/RichText` can use any host rich text editor and prop format; Forge provides no fixed rich text document or toolbar.
+
+Use `renderSlot` to customize drop zones. The default canvas provides component insertion points in rendered slots.
+
+See [Reactive Forge](https://github.com/Niikelion/reactive-forge).

@@ -1,5 +1,4 @@
-import {ComponentIdentity} from "@/schema/ComponentIdentity";
-import {RichTextMark} from "@/schema/RichText";
+import {SlotAcceptance} from "@/schema/ComponentGroup";
 import {SlotPath} from "@/schema/SlotPath";
 import type {EditorPresentation} from "@/schema/EditorPresentation";
 
@@ -15,28 +14,20 @@ export interface AnyNodePolicy {
 
 export interface ComponentsPolicy {
     kind: "components"
-    accepts: ComponentIdentity[]
+    accepts: SlotAcceptance[]
     multiple?: boolean
     minItems?: number
     maxItems?: number
 }
 
-export interface RichTextPolicy {
-    kind: "richText"
-    inline: boolean
-    marks: RichTextMark[]
-    blocks?: { paragraphs?: boolean, lists?: boolean }
-}
-
 export interface ComponentRefPolicy {
     kind: "componentRef"
-    accepts: ComponentIdentity[]
+    accepts: SlotAcceptance[]
 }
 
 export type SlotPolicy =
     | AnyNodePolicy
     | ComponentsPolicy
-    | RichTextPolicy
     | ComponentRefPolicy
 
 // Authoring API, section 4. `SlotRule` is what `defineComponentMetadata`/`defineLibraryMetadata`

@@ -5,9 +5,6 @@ import {
     ExternalComponentIdentity,
     MetadataDocument,
     resolveSlotPolicy,
-    RichTextBlockNode,
-    RichTextTextNode,
-    RichTextValueJson,
     SlotPath,
     ValueJson
 } from "@reactive-forge/schema"
@@ -50,8 +47,6 @@ import {CompositionValidationError} from "./render.js"
 //    on the resolved EffectiveSlotRule.slot - the exact condition render.ts's renderNodesValue
 //    checks, resolved at THIS node's own exact SlotPath via `resolveSlotPolicy` directly (no longer
 //    routed through the old top-level-only `resolvePropSlotRules`).
-//  - "richText": the same fixed <strong>/<em>/<p>/<ul>/<ol>/<li> mapping render.ts's
-//    renderRichText*Node functions produce, as literal JSX source text, wrapped in `<>...</>`.
 //  - "componentRef": a bare identifier expression (`prop={Button}`), never JSX-wrapped, never
 //    called - with an import added for the referenced ComponentIdentity (project or external).
 //
@@ -226,8 +221,6 @@ function collectCompositionValueComponentIds(value: CompositionValue, ids: Map<I
             return
         case "componentRef":
             ids.set(identityKey(value.value), value.value)
-            return
-        case "richText":
             return
         case "nodes":
             for (const item of value.value.items) collectSlotItemComponentIds(item, ids, metadata)
@@ -439,36 +432,6 @@ function serializeSlotValueExpression(
 }
 
 // ---------------------------------------------------------------------------------------------
-// "richText" serialization - the exact same fixed <strong>/<em>/<p>/<ul>/<ol>/<li> mapping
-// render.ts's renderRichTextTextNode/renderRichTextBlockNode produce, as literal JSX source text.
-// ---------------------------------------------------------------------------------------------
-
-function serializeRichTextTextNode(node: RichTextTextNode): string {
-    let content = `{${JSON.stringify(node.text)}}`
-    for (let i = node.marks.length - 1; i >= 0; i--) {
-        const mark = node.marks[i]
-        if (mark === "bold") content = `<strong>${content}</strong>`
-        else if (mark === "italic") content = `<em>${content}</em>`
-    }
-    return content
-}
-
-function serializeRichTextBlockNode(node: RichTextBlockNode): string {
-    if (node.type === "paragraph")
-        return `<p>${node.children.map(serializeRichTextTextNode).join("")}</p>`
-    const tag = node.type === "bulletList" ? "ul" : "ol"
-    const items = node.items.map(item => `<li>${item.children.map(serializeRichTextTextNode).join("")}</li>`).join("")
-    return `<${tag}>${items}</${tag}>`
-}
-
-function serializeRichTextExpression(value: RichTextValueJson): string {
-    const content = value.inline
-        ? value.nodes.map(serializeRichTextTextNode).join("")
-        : value.nodes.map(serializeRichTextBlockNode).join("")
-    return `<>${content}</>`
-}
-
-// ---------------------------------------------------------------------------------------------
 // Recursive CompositionValue serialization, docs/slot-contract-recursive.md section 5's table -
 // the SAME dispatch shape as render.ts's renderCompositionValue, producing source text instead of
 // a live JS value.
@@ -490,8 +453,6 @@ function serializeCompositionValue(
             if (entry === undefined) throw new Error(`exportToTsx: internal error - missing import table entry for a componentRef value`)
             return entry.localName
         }
-        case "richText":
-            return serializeRichTextExpression(value.value)
         case "nodes": {
             const rule = resolveSlotPolicy(componentMeta, path)
             return serializeSlotValueExpression(rule, value.value.items, metadata, imports, callbacksParamName)

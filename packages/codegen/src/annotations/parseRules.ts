@@ -9,7 +9,9 @@
 import { CallExpression, Node, ObjectLiteralExpression, ts } from "ts-morph"
 import { componentId } from "../hash.js"
 import { Diagnostic } from "../metadataTypes.js"
-import { ComponentIdentity, PathSegment, SlotPath, SlotPolicy, SlotRule, VariantLiteral } from "../slotTypes.js"
+import { ComponentGroup, SlotAcceptance, ComponentIdentity, PathSegment, SlotPath, SlotPolicy, SlotRule, VariantLiteral } from "../slotTypes.js"
+
+import {resolveComponentGroup} from "./groups.js"
 
 function locationOf(node: Node): Diagnostic["location"] {
     const sourceFile = node.getSourceFile()
@@ -171,14 +173,16 @@ function parsePath(node: Node, diagnostics: Diagnostic[]): SlotPath | undefined 
 
 // --- slot policy / collection (section 3) -----------------------------------
 
-function parseAccepts(node: Node, context: IdentityResolutionContext, diagnostics: Diagnostic[]): ComponentIdentity[] | undefined {
+function parseAccepts(node: Node, context: IdentityResolutionContext, diagnostics: Diagnostic[]): SlotAcceptance[] | undefined {
     if (!Node.isArrayLiteralExpression(node)) {
         diagnostics.push(unsupported(node, "accepts is not an array literal"))
         return undefined
     }
-    const identities: ComponentIdentity[] = []
+    const identities: SlotAcceptance[] = []
     for (const element of node.getElements()) {
-        const identity = resolveComponentIdentity(element, context)
+        const group = resolveComponentGroup(element)
+        const groupType = element.getType().getProperty("kind")?.getTypeAtLocation(element).getLiteralValue() === "group"
+        const identity = group ?? (groupType ? undefined : resolveComponentIdentity(element, context))
         if (identity === undefined) {
             diagnostics.push(unsupported(element, "unresolvable component reference in accepts"))
             return undefined
@@ -235,43 +239,8 @@ function parseSlotPolicy(node: Node, context: IdentityResolutionContext, diagnos
     }
 
     if (kind === "richText") {
-        const inlineNode = findProperty(node, "inline")
-        const inline = inlineNode ? readBooleanLiteral(inlineNode) : undefined
-        if (inline === undefined) {
-            diagnostics.push(unsupported(node, "richText policy missing literal 'inline'"))
-            return undefined
-        }
-        const marksNode = findProperty(node, "marks")
-        const marksList: ("bold" | "italic")[] = []
-        if (marksNode) {
-            if (!Node.isArrayLiteralExpression(marksNode)) {
-                diagnostics.push(unsupported(marksNode, "marks is not an array literal"))
-                return undefined
-            }
-            for (const element of marksNode.getElements()) {
-                const value = readStringLiteral(element)
-                if (value !== "bold" && value !== "italic") {
-                    diagnostics.push(unsupported(element, "unknown rich text mark"))
-                    return undefined
-                }
-                marksList.push(value)
-            }
-        }
-        let blocks: { paragraphs?: boolean, lists?: boolean } | undefined
-        const blocksNode = findProperty(node, "blocks")
-        if (blocksNode) {
-            if (!Node.isObjectLiteralExpression(blocksNode)) {
-                diagnostics.push(unsupported(blocksNode, "blocks is not an object literal"))
-                return undefined
-            }
-            const paragraphsNode = findProperty(blocksNode, "paragraphs")
-            const listsNode = findProperty(blocksNode, "lists")
-            blocks = {
-                ...(paragraphsNode ? { paragraphs: readBooleanLiteral(paragraphsNode) } : {}),
-                ...(listsNode ? { lists: readBooleanLiteral(listsNode) } : {})
-            }
-        }
-        return { kind: "richText", inline, marks: marksList, ...(blocks !== undefined ? { blocks } : {}) }
+        diagnostics.push({severity: "error", code: "legacy-rich-text-policy", message: 'The richText policy has been removed. Use a components policy accepting the forge/RichText group.', location: locationOf(node)})
+        return undefined
     }
 
     diagnostics.push(unsupported(node, `unknown slot policy kind "${kind}"`))
@@ -384,6 +353,7 @@ export interface ParsedDefineComponentMetadataCall {
     componentRefNode: Node
     identity: ComponentIdentity | undefined
     rules: SlotRule[]
+    groups?: ComponentGroup[]
     diagnostics: Diagnostic[]
     location: Diagnostic["location"]
 }
@@ -404,10 +374,22 @@ export function parseDefineComponentMetadataCall(call: CallExpression, context: 
     const identity = resolveComponentIdentity(componentRefNode, context)
 
     let rules: SlotRule[] = []
+    let groups: ComponentGroup[] | undefined
     if (configNode) {
         if (!Node.isObjectLiteralExpression(configNode)) {
             diagnostics.push(unsupported(configNode, "defineComponentMetadata config is not an object literal"))
         } else {
+            const groupsProperty = configNode.getProperty("groups")
+            if (groupsProperty) {
+                const groupsNode = findProperty(configNode, "groups")
+                if (!groupsNode || !Node.isArrayLiteralExpression(groupsNode)) {
+                    diagnostics.push(unsupported(groupsProperty, "groups must be a static array literal"))
+                } else {
+                    const parsed = groupsNode.getElements().map(element => resolveComponentGroup(element))
+                    if (parsed.some(group => group === undefined)) diagnostics.push(unsupported(groupsNode, "groups must contain static component groups"))
+                    else groups = [...new Map((parsed as ComponentGroup[]).map(group => [group.id, group])).values()]
+                }
+            }
             const rulesNode = findProperty(configNode, "rules")
             if (rulesNode) {
                 if (!Node.isArrayLiteralExpression(rulesNode)) {
@@ -429,7 +411,7 @@ export function parseDefineComponentMetadataCall(call: CallExpression, context: 
         }
     }
 
-    return { componentRefNode, identity, rules, diagnostics, location: locationOf(call) }
+    return { componentRefNode, identity, rules, ...(groups !== undefined ? {groups} : {}), diagnostics, location: locationOf(call) }
 }
 
 // Finds every `defineComponentMetadata(...)` call expression anywhere under `root` (a source

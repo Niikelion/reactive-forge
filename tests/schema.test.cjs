@@ -309,11 +309,12 @@ test('S32: mergeSlotPolicy replaces array fields wholesale (never concatenates) 
   assert.equal(merged.multiple, false); // not restated by incoming, base survives
 });
 
-test('S33: mergeSlotPolicy replaces "blocks" wholesale, not key-by-key', () => {
-  const base = {kind: 'richText', inline: false, marks: ['bold'], blocks: {lists: true}};
-  const incoming = {kind: 'richText', inline: false, marks: ['bold'], blocks: {paragraphs: true}};
-  const merged = mergeSlotPolicy(base, incoming);
-  assert.deepEqual(merged.blocks, {paragraphs: true});
+test('S33: mergeSlotPolicy replaces group accepts wholesale', () => {
+  const base = {kind:'components', accepts:[{kind:'group',id:'forge/Text'}], multiple:true};
+  const incoming = {kind:'components', accepts:[{kind:'group',id:'forge/RichText'}]};
+  const merged = mergeSlotPolicy(base,incoming);
+  assert.deepEqual(merged.accepts,incoming.accepts);
+  assert.equal(merged.multiple,true);
 });
 
 test('S34: mergeCollection merges minItems/maxItems field-by-field', () => {
@@ -415,7 +416,7 @@ test('S41: checkSlotValue rejects a component instance not in the accepted list,
   const result = checkSlotValue(
     rule,
     {itemId: 'i2', kind: 'instance', instance: {componentId: 'other-component'}},
-    {library: libraryWithButton, currentItemCount: 0, currentNonVoidCount: 0}
+    {library: {files: [{path: "test", components: {Other: {id: "other-component", component: () => null, args: {type: "object", properties: {}}}}}]}, currentItemCount: 0, currentNonVoidCount: 0}
   );
   assert.equal(result.ok, false);
   assert.equal(result.diagnostics[0].code, 'component-not-accepted');
@@ -431,26 +432,10 @@ test('S42: checkSlotValue enforces maxItems on the default AnyNodePolicy', () =>
   assert.equal(withinBounds.ok, true);
 });
 
-test('S43: checkSlotValue accepts a richText value matching an inline policy and rejects a disallowed mark', () => {
-  const richRule = {
-    path: ['title'],
-    slot: {kind: 'richText', inline: true, marks: ['bold']},
-    appliedFrom: {slot: 'library'},
-  };
-  const ok = checkSlotValue(
-    richRule,
-    {kind: 'richText', version: 1, inline: true, nodes: [{type: 'text', text: 'hi', marks: ['bold']}]},
-    {library: libraryWithButton, currentItemCount: 0, currentNonVoidCount: 0}
-  );
-  assert.deepEqual(ok, {ok: true});
-
-  const rejected = checkSlotValue(
-    richRule,
-    {kind: 'richText', version: 1, inline: true, nodes: [{type: 'text', text: 'hi', marks: ['italic']}]},
-    {library: libraryWithButton, currentItemCount: 0, currentNonVoidCount: 0}
-  );
-  assert.equal(rejected.ok, false);
-  assert.equal(rejected.diagnostics[0].code, 'richtext-mark-not-accepted');
+test('S43: group restrictions reject raw text regardless of group name', () => {
+  const rule = {path:['title'],slot:{kind:'components',accepts:[{kind:'group',id:'forge/Text'}]},appliedFrom:{slot:'library'}};
+  const result=checkSlotValue(rule,{itemId:'text-item',kind:'text',value:'hi'},{library:libraryWithButton,currentItemCount:0,currentNonVoidCount:0});
+  assert.equal(result.ok,false);
 });
 
 test('S44: checkSlotValue rejects an accepts-list match that is not actually registered in the library (independent review finding)', () => {

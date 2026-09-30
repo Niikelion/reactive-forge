@@ -25,7 +25,7 @@
 
 import type { FC, ComponentType } from "react"
 import { each, variant } from "@reactive-forge/schema"
-import type { ComponentMetadataSource, LibraryMetadataSource, PathSegment, SlotRule } from "./slotTypes.js"
+import type { ComponentMetadataSource, LibraryMetadataSource, PathSegment, SlotRule, ComponentGroup, SlotAcceptance } from "./slotTypes.js"
 
 export interface ExternalComponentRef {
     readonly __rfExternalRef: true
@@ -34,6 +34,13 @@ export interface ExternalComponentRef {
     readonly subpath?: string
     readonly isDefault: boolean
 }
+
+export type AuthorComponentReference = SlotAcceptance | ComponentType<never> | ExternalComponentRef
+export type AuthorSlotPolicy =
+    | Exclude<NonNullable<SlotRule["slot"]>, {kind: "components" | "componentRef"}>
+    | (Omit<Extract<NonNullable<SlotRule["slot"]>, {kind: "components"}>, "accepts"> & {accepts: AuthorComponentReference[]})
+    | {kind: "componentRef", accepts: AuthorComponentReference[]}
+export type AuthorSlotRule = Omit<SlotRule, "slot"> & {slot?: AuthorSlotPolicy}
 
 export function externalComponent(
     packageSpecifier: string,
@@ -51,9 +58,9 @@ export function externalComponent(
 
 export function defineComponentMetadata<P>(
     component: FC<P> | ComponentType<P> | ExternalComponentRef,
-    config: { rules?: SlotRule[] }
+    config: { groups?: ComponentGroup[], rules?: AuthorSlotRule[] }
 ): ComponentMetadataSource {
-    return { rules: config.rules ?? [] }
+    return { ...(config.groups !== undefined ? {groups: config.groups} : {}), rules: config.rules ?? [] }
 }
 
 export function defineLibraryMetadata(config: {
@@ -65,3 +72,5 @@ export function defineLibraryMetadata(config: {
 
 export { each, variant }
 export type { PathSegment }
+
+export { defineComponentGroup, Text, RichText } from "@reactive-forge/schema"

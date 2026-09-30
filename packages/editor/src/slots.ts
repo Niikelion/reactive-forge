@@ -6,8 +6,6 @@ import {
     Diagnostic,
     findComponentEntry,
     MetadataDocument,
-    RichTextMark,
-    RichTextValueJson,
     SlotCheckContext,
     SlotCheckResult,
     SlotItemCandidate
@@ -268,85 +266,6 @@ export function moveSlotItem(document: CompositionDocument, metadata: MetadataDo
 }
 
 // ---------------------------------------------------------------------------------------------
-// Rich text editing (docs/slot-contract.md section 8's "richText" bullet). No WYSIWYG editor -
-// a minimal toggle-a-mark-on-the-whole-value operation, still producing a real,
-// checkSlotValue-validated RichTextValueJson and rejecting a disallowed mark per the target
-// RichTextPolicy.marks.
-// ---------------------------------------------------------------------------------------------
-export function plainRichText(text: string, inline: boolean): RichTextValueJson {
-    if (inline) return {kind: "richText", version: 1, inline: true, nodes: [{type: "text", text, marks: []}]}
-    return {
-        kind: "richText",
-        version: 1,
-        inline: false,
-        nodes: [{type: "paragraph", children: [{type: "text", text, marks: []}]}]
-    }
-}
-
-function toggleMarkOnTextNode<T extends {marks: RichTextMark[]}>(node: T, mark: RichTextMark): T {
-    const has = node.marks.includes(mark)
-    return {...node, marks: has ? node.marks.filter(m => m !== mark) : [...node.marks, mark]}
-}
-
-/** Toggles `mark` on every text run in `value` (all-or-nothing: on if any run lacked it, per typical rich-text toggle UX is "on" when not already uniformly on). */
-export function toggleRichTextMark(value: RichTextValueJson, mark: RichTextMark): RichTextValueJson {
-    if (value.inline) return {...value, nodes: value.nodes.map(n => toggleMarkOnTextNode(n, mark))}
-    return {
-        ...value,
-        nodes: value.nodes.map(block => {
-            if (block.type === "paragraph") return {...block, children: block.children.map(n => toggleMarkOnTextNode(n, mark))}
-            return {
-                ...block,
-                items: block.items.map(item => ({...item, children: item.children.map(n => toggleMarkOnTextNode(n, mark))}))
-            }
-        })
-    }
-}
-
-/** Sets the text content of `value` (inline single-run case; used by the demo's plain textarea editing). */
-export function setRichTextContent(value: RichTextValueJson, text: string): RichTextValueJson {
-    if (value.inline) {
-        const first = value.nodes[0]
-        return {...value, nodes: [{type: "text", text, marks: first?.marks ?? []}]}
-    }
-    const firstBlock = value.nodes[0]
-    const firstMarks = firstBlock?.type === "paragraph" ? firstBlock.children[0]?.marks ?? [] : []
-    return {...value, nodes: [{type: "paragraph", children: [{type: "text", text, marks: firstMarks}]}]}
-}
-
-/** Validates a candidate `RichTextValueJson` for prop `propName` on `hostComponent`, via `checkSlotValue` against the same resolved policy validation uses. */
-export function checkRichTextValue(
-    hostComponent: ComponentMetadata,
-    propName: string,
-    library: ComponentLibraryData,
-    candidate: RichTextValueJson
-): SlotCheckResult {
-    const rules = resolvePropSlotRules(hostComponent, propName)
-    if (rules.itemRule?.slot?.kind !== "richText")
-        return {ok: false, diagnostics: [{severity: "error", code: "policy-type-mismatch", message: `"${propName}" does not resolve to a richText policy`}]}
-    return checkSlotValue(rules.itemRule, candidate, {library, currentItemCount: 0, currentNonVoidCount: 0})
-}
-
-/** Sets a `"richText"`-kind prop value on the instance at `path`, only if it passes `checkRichTextValue`; unchanged document + reason on rejection. */
-export function setRichTextProp(
-    document: CompositionDocument,
-    metadata: MetadataDocument,
-    library: ComponentLibraryData,
-    path: ValuePath,
-    propName: string,
-    value: RichTextValueJson,
-    callbacks?: CallbackRegistry
-): SlotOperationResult {
-    const host = getInstanceAtPath(document, path)
-    const hostComponent = findHostComponent(metadata, host.componentId)
-    const result = checkRichTextValue(hostComponent, propName, library, value)
-    if (!result.ok) return {ok: false, document, reason: describeRejection(result), diagnostics: result.diagnostics}
-    return commitDocument(document, updateInstanceAtPath(document, path, instance => ({
-            ...instance,
-            props: {...instance.props, [propName]: {kind: "composed", value: {kind: "richText", value}}}
-        })), metadata, library, callbacks)
-}
-
 // ---------------------------------------------------------------------------------------------
 // Component-reference picker (docs/slot-contract.md section 8's "componentRef" bullet):
 // candidates restricted to the resolved policy's `accepts` list, via `checkSlotValue` - never

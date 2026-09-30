@@ -25,8 +25,8 @@ export type {
     SlotPath,
     AnyNodePolicy,
     ComponentsPolicy,
-    RichTextMark,
-    RichTextPolicy,
+    ComponentGroup,
+    SlotAcceptance,
     ComponentRefPolicy,
     SlotPolicy,
     SlotRule,
@@ -47,14 +47,13 @@ export type {
     ExternalLibraryRef
 } from "@reactive-forge/schema"
 
-import type { SlotRule as SlotRuleType } from "@reactive-forge/schema"
-
 // Opaque authoring-API return types. Codegen never inspects these at runtime (it statically
 // analyzes the *call expression* that produces them, per section 5's "never imported/executed"
 // rule) - they exist so `defineComponentMetadata`/`defineLibraryMetadata` call sites in fixture/
 // project source typecheck. See slotAuthoring.ts.
 export interface ComponentMetadataSource {
-    rules: SlotRuleType[]
+    groups?: import("@reactive-forge/schema").ComponentGroup[]
+    rules: import("./slotAuthoring.js").AuthorSlotRule[]
 }
 
 export interface LibraryMetadataSource {

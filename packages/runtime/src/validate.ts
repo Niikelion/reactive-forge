@@ -7,12 +7,13 @@ import {
     EffectiveSlotRule,
     findComponentEntry,
     isPathResolutionDiagnostic,
+    isComponentGroup,
+    isComponentGroupRegistered,
     MetadataDocument,
     ObjectSchema,
     registerCommonSchemas,
     resolveSegment,
     resolveSlotPolicy,
-    RichTextValueJson,
     Schema,
     schemaFromJson,
     SlotCheckContext,
@@ -88,7 +89,7 @@ function isFunctionLike(schema: {type: string, types?: {type: string}[]}): boole
 // resolveSlotPolicy returns at two different paths," handled inline by the recursive walker.
 // ---------------------------------------------------------------------------------------------
 export interface PropSlotRules {
-    /** The rule checked against each stored `CompositionSlotItem`/`RichTextValueJson`/`ComponentIdentity`. */
+    /** The rule checked against each stored `CompositionSlotItem`/`ComponentIdentity`. */
     itemRule: ReturnType<typeof resolveSlotPolicy>
     /** The array-length bound on `items.length`, when the prop is a declared array (e.g. `actions`). */
     collection?: { minItems?: number, maxItems?: number }
@@ -195,6 +196,10 @@ function validateCompositionValue(
     diagnosticPath: string,
     diagnostics: CompositionDiagnostic[]
 ): void {
+    if ((value as {kind: string}).kind === "richText") {
+        diagnostics.push({severity: "error", code: "legacy-rich-text-requires-host-conversion", message: "Convert legacy richText to a registered host component", path: diagnosticPath})
+        return
+    }
     switch (value.kind) {
         case "leaf": {
             const rule = resolveSlotPolicy(componentMeta, path)
@@ -214,7 +219,6 @@ function validateCompositionValue(
             return
         }
         case "nodes":
-        case "richText":
         case "componentRef": {
             const rule = resolveSlotPolicy(componentMeta, path)
             if (rule?.slot === undefined) {
@@ -225,7 +229,7 @@ function validateCompositionValue(
                 validateNodesValue(rule, value.value.items, metadata, library, callbacks, diagnosticPath, diagnostics)
                 return
             }
-            const candidate: RichTextValueJson | ComponentIdentity = value.value
+            const candidate: ComponentIdentity = value.value
             const result = checkSlotValue(rule, candidate, {library, currentItemCount: 0, currentNonVoidCount: 0, metadata})
             if (!result.ok)
                 for (const d of result.diagnostics) diagnostics.push({severity: d.severity, code: d.code, message: d.message, path: diagnosticPath})
@@ -323,6 +327,15 @@ function validateInstance(
     if (entry === undefined) {
         diagnostics.push({severity: "error", code: "component-not-registered", message: `No registry entry with id "${node.componentId}" for component "${componentMeta.name}" (${componentMeta.sourcePath})`, path})
         return
+    }
+
+    // Unknown constraints are configuration errors even for empty or omitted slots.
+    for (const rule of componentMeta.slots ?? []) {
+        if (rule.slot?.kind !== "components" && rule.slot?.kind !== "componentRef") continue
+        for (const group of rule.slot.accepts.filter(isComponentGroup)) {
+            if (!isComponentGroupRegistered(library, group))
+                diagnostics.push({severity: "error", code: "group-not-registered", message: `Component group "${group.id}" is not registered by this host`, path: `${path}.props.${JSON.stringify(rule.path)}`})
+        }
     }
 
     for (const [propName, propMeta] of Object.entries(componentMeta.props)) {
@@ -532,13 +545,6 @@ function freshId(prefix: string): string {
     return `${prefix}-${Date.now().toString(36)}-${migrationIdCounter.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-// Mirrors packages/editor/src/slots.ts's `plainRichText` exactly (a single unmarked text run) -
-// reimplemented locally for the same layering reason as `freshId` above.
-function plainRichText(text: string, inline: boolean): RichTextValueJson {
-    if (inline) return {kind: "richText", version: 1, inline: true, nodes: [{type: "text", text, marks: []}]}
-    return {kind: "richText", version: 1, inline: false, nodes: [{type: "paragraph", children: [{type: "text", text, marks: []}]}]}
-}
-
 function findComponentMetaByIdentity(metadata: MetadataDocument, sourcePath: string, name: string): ComponentMetadata | undefined {
     return metadata.components.find(component => component.sourcePath === sourcePath && component.name === name)
 }
@@ -569,12 +575,11 @@ function liftPlainValueToSlot(
     diagnosticPath: string,
     diagnostics: MigrationDiagnostic[]
 ): CompositionValue | null {
-    if (policy.kind === "richText") {
-        if (value.type === "string") return {kind: "richText", value: plainRichText(value.value, policy.inline)}
-        diagnostics.push({severity: "warning", code: "migrated-value-discarded", message: `Non-string value at a richText-policy path was discarded (original: ${JSON.stringify(value)})`, path: diagnosticPath})
-        return {kind: "richText", value: plainRichText("", policy.inline)}
+    if (policy.kind === "components") {
+        diagnostics.push({severity: "error", code: "restricted-slot-requires-host-conversion", message: "Convert legacy plain slot content to an explicitly accepted host component", path: diagnosticPath})
+        return {kind: "nodes", value: {items: []}}
     }
-    if (policy.kind === "any" || policy.kind === "components") {
+    if (policy.kind === "any") {
         if (value.type === "string") return {kind: "nodes", value: {items: [{itemId: freshId("item"), kind: "text", value: value.value}]}}
         diagnostics.push({severity: "warning", code: "migrated-value-discarded", message: `Non-string value at a ReactNode-policy path was discarded (original: ${JSON.stringify(value)})`, path: diagnosticPath})
         return {kind: "nodes", value: {items: []}}
@@ -688,7 +693,8 @@ function migratePropValueV2ToV3(
         case "componentRef":
             return {kind: "composed", value: {kind: "componentRef", value: propValue.value}}
         case "richText":
-            return {kind: "composed", value: {kind: "richText", value: propValue.value}}
+            diagnostics.push({severity: "error", code: "legacy-rich-text-requires-host-conversion", message: "Convert legacy richText content to a registered host component before migration", path: diagnosticPath})
+            return null
         case "nodes":
             return {
                 kind: "composed",
@@ -716,7 +722,7 @@ function migrateInstanceV2ToV3(node: CompositionInstanceV2, metadata: MetadataDo
             diagnostics.push({severity: "warning", code: "migrated-unknown-component", message: `No current metadata for component id "${node.componentId}"; prop "${propName}" migrated structurally without policy awareness`, path: propPath})
             if (propValue.kind === "callback") props[propName] = propValue
             else if (propValue.kind === "componentRef") props[propName] = {kind: "composed", value: {kind: "componentRef", value: propValue.value}}
-            else if (propValue.kind === "richText") props[propName] = {kind: "composed", value: {kind: "richText", value: propValue.value}}
+            else if (propValue.kind === "richText") diagnostics.push({severity: "error", code: "legacy-rich-text-requires-host-conversion", message: "Convert legacy richText to a registered host component", path: propPath})
             else if (propValue.kind === "nodes") props[propName] = {kind: "composed", value: {kind: "nodes", value: {items: propValue.value.items.map(item => migrateSlotItemV2ToV3(item, metadata, propPath, diagnostics))}}}
             else props[propName] = {kind: "composed", value: {kind: "leaf", value: propValue.value}}
             continue

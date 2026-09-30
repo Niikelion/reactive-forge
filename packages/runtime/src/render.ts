@@ -12,9 +12,6 @@ import {
     ObjectSchema,
     resolveSegment,
     resolveSlotPolicy,
-    RichTextBlockNode,
-    RichTextTextNode,
-    RichTextValueJson,
     Schema,
     schemaFromJson,
     SlotPath,
@@ -105,34 +102,6 @@ function constructToJs(construct: ValueConstruct, metadata: MetadataDocument, li
     }
 }
 
-// Fixed, non-overridable rich-text renderer, docs/slot-contract.md section 9: RichTextTextNode ->
-// text wrapped in <strong>/<em> per its marks (nested in mark order, deterministic),
-// RichTextParagraphNode -> <p>, list nodes -> <ul>/<ol> with <li> children. A small, fixed mapping
-// - never configurable - so it can never become an injection point. Unchanged in v3 (only where in
-// the tree a "richText" node may appear generalizes - docs/slot-contract-recursive.md section 5).
-function renderRichTextTextNode(node: RichTextTextNode, key?: number): ReactNode {
-    let content: ReactNode = node.text
-    for (let i = node.marks.length - 1; i >= 0; i--) {
-        const mark = node.marks[i]
-        if (mark === "bold") content = createElement("strong", null, content)
-        else if (mark === "italic") content = createElement("em", null, content)
-    }
-    return key !== undefined ? createElement(Fragment, {key}, content) : content
-}
-
-function renderRichTextBlockNode(node: RichTextBlockNode, key: number): ReactNode {
-    if (node.type === "paragraph")
-        return createElement("p", {key}, node.children.map((child, i) => renderRichTextTextNode(child, i)))
-    const tag = node.type === "bulletList" ? "ul" : "ol"
-    return createElement(tag, {key}, node.items.map((item, i) =>
-        createElement("li", {key: i}, item.children.map((child, j) => renderRichTextTextNode(child, j)))))
-}
-
-function renderRichText(value: RichTextValueJson): ReactNode {
-    if (value.inline) return value.nodes.map((node, i) => renderRichTextTextNode(node, i))
-    return value.nodes.map((node, i) => renderRichTextBlockNode(node, i))
-}
-
 function renderSlotItem(item: CompositionSlotItem, metadata: MetadataDocument, library: ComponentLibraryData, callbacks: CallbackRegistry): ReactNode {
     switch (item.kind) {
         case "text":
@@ -211,8 +180,6 @@ function renderCompositionValue(
         }
         case "nodes":
             return renderNodesValue(componentMeta, path, value.value.items, metadata, library, callbacks)
-        case "richText":
-            return renderRichText(value.value)
         case "componentRef":
             return resolveComponentRef(value.value, library, metadata)
         case "object": {

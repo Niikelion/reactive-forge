@@ -1,3 +1,4 @@
+import {RichText} from "../../../../../packages/schema/src"
 // Fixture for tests/runtime-v3.test.cjs (recursive composition values and policy enforcement,
 // docs/slot-contract-recursive.md). Additive only - does not touch SlotCard.tsx/RichTextShowcase.tsx,
 // whose own rules other tests (tests/runtime-v2.test.cjs, tests/editor.test.cjs,
@@ -55,7 +56,7 @@ export const NestedSlotCard = ({ content, sections, actions }: NestedSlotCardPro
 
 export const NestedSlotCardMetadata = defineComponentMetadata(NestedSlotCard, {
     rules: [
-        { path: ["content", "header", "title"], slot: { kind: "richText", inline: true, marks: ["bold"] } },
+        { path: ["content", "header", "title"], slot: { kind: "components", accepts: [RichText] } },
         { path: ["sections"], collection: { maxItems: 5 } },
         { path: ["sections", each(), "body"], slot: { kind: "any", multiple: true, maxItems: 3 } },
         { path: ["actions"], collection: { maxItems: 3 } },

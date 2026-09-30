@@ -56,6 +56,8 @@ async function buildFixture() {
 
   const metadata = JSON.parse(fs.readFileSync(path.join(fixtureOutDir, 'metadata.json'), 'utf8'));
   const registry = (await import(pathToFileURL(path.join(fixtureOutDir, 'bundle.js')).href)).components;
+  const richEntry = registry.files.flatMap(file => Object.values(file.components)).find(entry => entry.id === byName(metadata, 'RichContent').id);
+  assert.ok(richEntry.groups.some(group => group.id === 'forge/RichText'), 'generated registration preserves host-declared membership');
   return { metadata, registry };
 }
 
@@ -65,12 +67,19 @@ function byName(metadata, name) {
   return found;
 }
 
+function richValue(metadata, text, id = 'rich-title', inline = true) {
+  return {kind: 'nodes', value: {items: [{itemId: `${id}-item`, kind: 'instance', instance: {
+    kind: 'instance', instanceId: id, componentId: byName(metadata, 'RichContent').id,
+    props: {text: {kind: 'composed', value: {kind: 'leaf', value: {type: 'string', value: text}}}, inline: {kind: 'composed', value: {kind: 'leaf', value: {type: 'boolean', value: inline}}}}
+  }}]}};
+}
+
 test('runtime v3: metadata.json carries real nested slot rules for NestedSlotCard (content.header.title, sections.each().body, actions.each())', async () => {
   const { metadata } = await buildFixture();
   try {
     const nested = byName(metadata, 'NestedSlotCard');
     assert.ok(Array.isArray(nested.slots) && nested.slots.length > 0);
-    assert.ok(nested.slots.some(r => JSON.stringify(r.path) === JSON.stringify(['content', 'header', 'title']) && r.slot?.kind === 'richText'));
+    assert.ok(nested.slots.some(r => JSON.stringify(r.path) === JSON.stringify(['content', 'header', 'title']) && r.slot?.kind === 'components' && r.slot.accepts.some(a => a.kind === 'group' && a.id === 'forge/RichText')));
     assert.ok(nested.slots.some(r => JSON.stringify(r.path) === JSON.stringify(['sections', { kind: 'each' }, 'body']) && r.slot?.kind === 'any'));
     assert.ok(nested.slots.some(r => JSON.stringify(r.path) === JSON.stringify(['actions', { kind: 'each' }]) && r.slot?.kind === 'any' && r.slot.maxItems === 2));
   } finally {
@@ -100,7 +109,7 @@ test('runtime v3: validates/renders/exports worked examples 8.1 (nested object),
                 header: {
                   kind: 'object',
                   fields: {
-                    title: { kind: 'richText', value: { kind: 'richText', version: 1, inline: true, nodes: [{ type: 'text', text: 'Hello', marks: ['bold'] }] } },
+                    title: richValue(metadata, 'Hello'),
                     subtitle: { kind: 'leaf', value: { type: 'string', value: 'A subtitle' } },
                   },
                 },
@@ -204,7 +213,7 @@ test('runtime v3: validates/renders/exports worked examples 8.1 (nested object),
     const tsx = exportToTsx(doc, metadata, registry);
     assert.match(tsx, /import \{ Greeter \} from/, 'Greeter imported exactly once despite 3 distinct nested instances');
     assert.match(tsx, /actions=\{\[<><Greeter name="First" \/><Greeter name="Second" \/><\/>, <>\{"Cancel"\}<\/>\]\}/, 'actions serializes as a real array literal whose first element is a real multi-child Fragment (2 nodes) - the flat-array-gap closure in source-text form; the second entry is ALSO Fragment-wrapped since this slot\'s policy sets multiple:true explicitly');
-    assert.match(tsx, /content=\{\{header: \{title: <><strong>\{"Hello"\}<\/strong><\/>, subtitle: "A subtitle"\}\}\}/, 'content serializes as a nested object literal, with title\'s richText value emitted as literal JSX source');
+    assert.match(tsx, /title: <RichContent[^>]*text="Hello"/, 'nested title exports the host component');
   } finally {
     cleanFixtureOutput();
   }
@@ -229,7 +238,7 @@ test('runtime v3: rejects a "leaf" value containing a legacy "element" node anyw
                 header: {
                   kind: 'object',
                   fields: {
-                    title: { kind: 'richText', value: { kind: 'richText', version: 1, inline: true, nodes: [] } },
+                    title: {kind: 'nodes', value: {items: []}},
                     // subtitle is a plain string prop (non-slot-domain) - a "leaf" holding a legacy
                     // "element" reference must be rejected, never silently rendered as a bypass.
                     subtitle: { kind: 'leaf', value: { type: 'element', value: { path: 'does-not-matter.tsx', name: 'DoesNotMatter', args: {} } } },
@@ -302,46 +311,16 @@ test('runtime v3: migrateCompositionDocumentV2ToV3 - lossless leaf-wrap case (Gr
   }
 });
 
-test('runtime v3: migrateCompositionDocumentV2ToV3 - mechanical lift of a plain string to richText at content.header.title', async () => {
-  const { metadata, registry } = await buildFixture();
+test('runtime v3: legacy richText requires explicit host conversion during migration', async () => {
+  const {metadata} = await buildFixture();
   try {
-    const nestedMeta = byName(metadata, 'NestedSlotCard');
-    const v2Doc = {
-      schemaVersion: 2,
-      root: {
-        kind: 'instance',
-        instanceId: 'n1',
-        componentId: nestedMeta.id,
-        props: {
-          content: { kind: 'value', value: { type: 'object', value: { header: { type: 'object', value: { title: { type: 'string', value: 'Plain title' }, subtitle: { type: 'string', value: 'Sub' } } } } } },
-          sections: { kind: 'value', value: { type: 'array', value: [] } },
-          actions: { kind: 'value', value: { type: 'array', value: [] } },
-        },
-      },
-    };
-    const result = migrateCompositionDocumentV2ToV3(v2Doc, metadata);
-    assert.deepEqual(result.diagnostics, [], 'a mechanical string -> richText lift is deterministic and lossless, not a discard');
-    assert.deepEqual(result.document.root.props.content, {
-      kind: 'composed',
-      value: {
-        kind: 'object',
-        fields: {
-          header: {
-            kind: 'object',
-            fields: {
-              title: { kind: 'richText', value: { kind: 'richText', version: 1, inline: true, nodes: [{ type: 'text', text: 'Plain title', marks: [] }] } },
-              subtitle: { kind: 'leaf', value: { type: 'string', value: 'Sub' } },
-            },
-          },
-        },
-      },
-    });
-
-    const validation = validateComposition(result.document, metadata, registry);
-    assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics));
-  } finally {
-    cleanFixtureOutput();
-  }
+    const result = migrateCompositionDocumentV2ToV3({schemaVersion: 2, root: {
+      kind: 'instance', instanceId: 'legacy', componentId: byName(metadata, 'RichTextShowcase').id,
+      props: {body: {kind: 'richText', value: {kind: 'richText', version: 1, inline: true, nodes: []}}}
+    }}, metadata);
+    assert.ok(result.diagnostics.some(d => d.code === 'legacy-rich-text-requires-host-conversion'));
+    assert.equal(result.document.root.props.body, undefined);
+  } finally { cleanFixtureOutput(); }
 });
 
 test('runtime v3: migrateCompositionDocumentV2ToV3 - discard-with-diagnostic (non-string value at a ReactNode-policy path)', async () => {
@@ -427,7 +406,9 @@ test('runtime v3: migrateCompositionDocumentV2ToV3 - legacy "element" at a slot-
       },
     };
     const result = migrateCompositionDocumentV2ToV3(v2Doc, metadata);
-    assert.deepEqual(result.diagnostics, [], 'a real slot-domain element reference converts losslessly, no discard needed');
+    assert.ok(result.diagnostics.some(d => d.code === 'restricted-slot-requires-host-conversion'));
+    // The host explicitly chooses the concrete implementation for legacy title text.
+    result.document.root.props.content.value.fields.header.fields.title = richValue(metadata, 'T');
 
     const actionsValue = result.document.root.props.actions.value;
     assert.equal(actionsValue.kind, 'array');
@@ -469,7 +450,7 @@ test('runtime v3: stable itemId survives a reorder of CompositionArrayItem entri
           componentId: nestedMeta.id,
           props: {
             content: { kind: 'composed', value: { kind: 'object', fields: { header: { kind: 'object', fields: {
-              title: { kind: 'richText', value: { kind: 'richText', version: 1, inline: true, nodes: [{ type: 'text', text: 'T', marks: [] }] } },
+              title: richValue(metadata, 'T'),
               subtitle: { kind: 'leaf', value: { type: 'string', value: 'S' } },
             } } } } },
             sections: { kind: 'composed', value: { kind: 'array', items: [] } },

@@ -1,8 +1,8 @@
 import {cloneElement, createElement, Fragment, isValidElement, ReactElement, ReactNode, useEffect, useRef, useState} from "react"
-import {ComponentLibraryData, ComponentMetadata, MetadataDocument, resolveSlotPolicy, RichTextMark, RichTextTextNode, RichTextValueJson} from "@reactive-forge/schema"
-import {CallbackRegistry, CompositionDocument, CompositionInstance, CompositionSlotItem, CompositionValue, renderComposition} from "@reactive-forge/runtime"
+import {ComponentLibraryData, ComponentMetadata, MetadataDocument, resolveSlotPolicy} from "@reactive-forge/schema"
+import {CallbackRegistry, CompositionDocument, CompositionInstance, CompositionSlotItem, CompositionValue, renderComposition, validateComposition} from "@reactive-forge/runtime"
 import {updateInstanceAtPath, ValuePath} from "./preview.js"
-import {editValue, generateId, insertAtValuePath, moveAtValuePath, newTextItem, removeAtValuePath, SlotOperationResult, toggleRichTextMark} from "./slots.js"
+import {editValue, generateId, insertAtValuePath, moveAtValuePath, newTextItem, removeAtValuePath, SlotOperationResult} from "./slots.js"
 
 export const componentDragType = "application/x-reactive-forge-component"
 
@@ -24,6 +24,13 @@ export interface CompositionEditorProps {
     createInstance?: (component: ComponentMetadata) => CompositionInstance | undefined
     /** Override outlet placement/markup for components with special child or layout semantics. */
     renderSlot?: (context: SlotOutletContext) => ReactNode
+    /** Host-owned editing UI for any registered component, including grouped text components. */
+    renderComponent?: (context: {
+        instance: CompositionInstance
+        path: ValuePath
+        element: ReactElement
+        onChange: (props: CompositionInstance["props"]) => void
+    }) => ReactElement
 }
 
 /** Sources carry registry IDs only; drops never deserialize executable content. */
@@ -50,47 +57,9 @@ export function ComponentPalette({metadata}: {metadata: MetadataDocument}): Reac
         }, component.name)))
 }
 
-/** Parse a closed rich-text vocabulary. Attributes and unknown elements are rejected, never retained. */
-export function readRichTextDom(root: HTMLElement, inline: boolean): RichTextValueJson {
-    function runs(nodes: NodeListOf<ChildNode>, marks: RichTextMark[] = []): RichTextTextNode[] {
-        return Array.from(nodes).flatMap(node => {
-            if (node.nodeType === 3) return [{type: "text" as const, text: node.textContent ?? "", marks}]
-            if (node.nodeType !== 1) throw new Error("Unsupported pasted content")
-            const element = node as HTMLElement
-            if (element.attributes.length > 0) throw new Error("Rich text does not allow attributes")
-            const tag = element.tagName.toLowerCase()
-            if (tag === "br") return [{type: "text" as const, text: "\n", marks}]
-            if (!["span", "b", "strong", "i", "em"].includes(tag)) throw new Error(`Rich text does not allow ${tag}`)
-            const mark = tag === "b" || tag === "strong" ? "bold" : tag === "i" || tag === "em" ? "italic" : undefined
-            return runs(element.childNodes, mark === undefined || marks.includes(mark) ? marks : [...marks, mark])
-        })
-    }
-    if (inline) return {kind: "richText", version: 1, inline: true, nodes: runs(root.childNodes)}
-    const nodes: Extract<RichTextValueJson, {inline: false}>["nodes"] = []
-    for (const node of Array.from(root.childNodes)) {
-        if (node.nodeType === 3) {
-            if (node.textContent) nodes.push({type: "paragraph", children: [{type: "text", text: node.textContent, marks: []}]})
-            continue
-        }
-        if (node.nodeType !== 1) throw new Error("Unsupported pasted content")
-        const element = node as HTMLElement
-        if (element.attributes.length > 0) throw new Error("Rich text does not allow attributes")
-        const tag = element.tagName.toLowerCase()
-        if (tag === "p" || tag === "div") nodes.push({type: "paragraph", children: runs(element.childNodes)})
-        else if (tag === "ul" || tag === "ol") {
-            const items = Array.from(element.children).map(item => {
-                if (item.tagName !== "LI" || item.attributes.length > 0) throw new Error("Lists may only contain plain list items")
-                return {type: "listItem" as const, children: runs(item.childNodes)}
-            })
-            nodes.push({type: tag === "ul" ? "bulletList" : "orderedList", items})
-        } else throw new Error(`Rich text does not allow ${tag}`)
-    }
-    return {kind: "richText", version: 1, inline: false, nodes}
-}
-
 interface OutletProps extends CompositionEditorProps {
     path: ValuePath
-    value: Extract<CompositionValue, {kind: "nodes" | "richText"}>
+    value: Extract<CompositionValue, {kind: "nodes"}>
     children: ReactNode
 }
 
@@ -99,7 +68,6 @@ function EditableOutlet(props: OutletProps): ReactElement {
     const [message, setMessage] = useState("")
     const [selected, setSelected] = useState("")
     const [text, setText] = useState("")
-    const [revision, setRevision] = useState(0)
     const outletRef = useRef<HTMLSpanElement>(null)
     const commit = (result: SlotOperationResult) => {
         setMessage(result.ok ? "" : result.reason)
@@ -139,36 +107,6 @@ function EditableOutlet(props: OutletProps): ReactElement {
         onKeyDown: (event: React.KeyboardEvent) => { if ((event.key === "Enter" || event.key === " ") && selected) { event.preventDefault(); insert(selected, index) } }
     }, "+")
     const error = message ? createElement("span", {role: "alert"}, message) : null
-    if (value.kind === "richText") {
-        const save = (element: HTMLElement) => {
-            try { commit(editValue(document, metadata, library, path, () => ({kind: "richText", value: readRichTextDom(element, value.value.inline)}), callbacks)) }
-            catch (error) { setMessage(error instanceof Error ? error.message : String(error)) }
-            setRevision(r => r + 1)
-        }
-        return createElement("span", {"data-slot-path": JSON.stringify(path), style: {display: "contents"}},
-            createElement(value.value.inline ? "span" : "div", {
-                key: revision, contentEditable: true, suppressContentEditableWarning: true, role: "textbox", "aria-label": "Edit rich text",
-                onBlur: (event: React.FocusEvent<HTMLElement>) => { save(event.currentTarget) },
-                onPaste: (event: React.ClipboardEvent<HTMLElement>) => {
-                    event.preventDefault()
-                    try {
-                        const html = event.clipboardData.getData("text/html")
-                        const root = event.currentTarget.ownerDocument.createElement("div")
-                        if (html) root.innerHTML = html
-                        else if (value.value.inline) root.textContent = event.clipboardData.getData("text/plain")
-                        else { const p = root.ownerDocument.createElement("p"); p.textContent = event.clipboardData.getData("text/plain"); root.append(p) }
-                        const next = readRichTextDom(root, value.value.inline)
-                        commit(editValue(document, metadata, library, path, () => ({kind: "richText", value: next}), callbacks))
-                    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)) }
-                    setRevision(r => r + 1)
-                }
-            }, props.children),
-            ...(["bold", "italic"] as const).map(mark => createElement("button", {
-                key: mark, type: "button", "aria-label": `Toggle ${mark}`,
-                onMouseDown: (event: React.MouseEvent) => { event.preventDefault() },
-                onClick: () => { commit(editValue(document, metadata, library, path, () => ({kind: "richText", value: toggleRichTextMark(value.value, mark)}), callbacks)) }
-            }, mark)), error)
-    }
     const rendered: ReactNode[] = Array.isArray(props.children) ? props.children as ReactNode[] : [props.children]
     const children: ReactNode[] = [dropPoint(0)]
     value.value.items.forEach((item, index) => {
@@ -198,7 +136,7 @@ export function CompositionEditor(options: CompositionEditorProps): ReactElement
         if (result.ok) options.onChange(result.document)
     }
     function instance(node: CompositionInstance, path: ValuePath): ReactElement {
-        const rendered = renderComposition({schemaVersion: 3, root: node}, options.metadata, options.library, {callbacks: options.callbacks}) as ReactElement<Record<string, unknown>>
+        const rendered = renderComposition({schemaVersion: options.document.schemaVersion, root: node}, options.metadata, options.library, {callbacks: options.callbacks}) as ReactElement<Record<string, unknown>>
         const props = {...rendered.props}
         for (const [name, prop] of Object.entries(node.props)) {
             if (prop.kind === "composed") props[name] = decorate(prop.value, props[name], [...path, {kind: "prop", propName: name}])
@@ -207,16 +145,20 @@ export function CompositionEditor(options: CompositionEditorProps): ReactElement
         if (component) for (const [name, prop] of Object.entries(component.props)) {
             if (node.props[name] !== undefined || prop.required || prop.defaultValue !== undefined) continue
             const rule = resolveSlotPolicy(component, [name])
-            if (rule?.slot?.kind !== "any" && rule?.slot?.kind !== "components" && rule?.slot?.kind !== "richText") continue
+            if (rule?.slot?.kind !== "any" && rule?.slot?.kind !== "components") continue
             // Keep absent values out of the saved document until the first successful edit.
-            const value: CompositionValue = rule.slot.kind === "richText"
-                ? {kind: "richText", value: {kind: "richText", version: 1, inline: rule.slot.inline, nodes: []} as RichTextValueJson}
-                : {kind: "nodes", value: {items: []}}
+            const value: CompositionValue = {kind: "nodes", value: {items: []}}
             const slotPath: ValuePath = [...path, {kind: "prop", propName: name}]
             const outlet = createElement(MissingOutlet, {...options, key: name, instancePath: path, propName: name, value})
             props[name] = options.renderSlot ? options.renderSlot({path: slotPath, value, children: null, outlet}) : outlet
         }
-        return cloneElement(rendered, props)
+        const element = cloneElement(rendered, props)
+        return options.renderComponent ? options.renderComponent({instance: node, path, element, onChange: nextProps => {
+            const candidate = updateInstanceAtPath(options.document, path, previous => ({...previous, props: nextProps}))
+            const result = validateComposition(candidate, options.metadata, options.library, options.callbacks)
+            setMessage(result.valid ? "" : result.diagnostics.map(d => d.message).join("; "))
+            if (result.valid) options.onChange(candidate)
+        }}) : element
     }
     function decorate(value: CompositionValue, rendered: unknown, path: ValuePath): unknown {
         switch (value.kind) {
@@ -235,8 +177,8 @@ export function CompositionEditor(options: CompositionEditorProps): ReactElement
             }
             case "variant": return decorate(value.value, rendered, [...path, {kind: "variant"}])
             case "nodes":
-            case "richText": {
-                const children = value.kind === "richText" ? rendered as ReactNode : value.value.items.map(item => item.kind === "instance"
+            {
+                const children = value.value.items.map(item => item.kind === "instance"
                     ? instance(item.instance, [...path, {kind: "slotItem", itemId: item.itemId}, {kind: "instance"}]) : item.kind === "text" ? item.value : null)
                 const outlet = createElement(EditableOutlet, {...options, key: JSON.stringify(path), path, value, children})
                 return options.renderSlot ? options.renderSlot({path, value, children, outlet}) : outlet
@@ -262,7 +204,7 @@ export function CompositionEditor(options: CompositionEditorProps): ReactElement
 }
 
 /** Absent optional props are only materialized by a user edit, never by viewing the canvas. */
-function MissingOutlet(options: CompositionEditorProps & {instancePath: ValuePath, propName: string, value: Extract<CompositionValue, {kind: "nodes" | "richText"}>}): ReactElement {
+function MissingOutlet(options: CompositionEditorProps & {instancePath: ValuePath, propName: string, value: Extract<CompositionValue, {kind: "nodes"}>}): ReactElement {
     const root = updateInstanceAtPath(options.document, options.instancePath, node => ({...node, props: {...node.props, [options.propName]: {kind: "composed", value: options.value}}})).root
     return createElement(EditableOutlet, {...options, document: {...options.document, root}, path: [...options.instancePath, {kind: "prop", propName: options.propName}], children: null})
 }

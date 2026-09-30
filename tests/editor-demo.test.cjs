@@ -98,7 +98,7 @@ test('editor demo: forge codegen/bundle + build-editor-demo produce a self-conta
     // Phase 3: forge.demo.config.ts now sets annotationSources.colocated: true so the demo
     // gets a real schemaVersion 2 metadata.json with SlotCard's real slot rules (see
     // demo.tsx's slot outlets: actions/icon/caption).
-    assert.equal(metadata.schemaVersion, 2);
+    assert.equal(metadata.schemaVersion, 4);
     for (const name of ['SlotCard', 'SlotIcon', 'NestedSlotCard']) {
       assert.ok(metadata.components.some((c) => c.name === name), `metadata.json describes ${name}, which demo.tsx depends on`);
     }
@@ -227,6 +227,7 @@ test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + 
     const metadata = JSON.parse(fs.readFileSync(path.join(outDemoDir, 'metadata.json'), 'utf8'));
     const registryModule = await import(pathToFileURL(path.join(outDemoDir, 'bundle.js')).href);
     const projectRegistry = registryModule.components;
+    const richId = metadata.components.find(c => c.name === 'RichContent').id;
 
     const byName = (name) => {
       const found = metadata.components.find((c) => c.name === name);
@@ -282,7 +283,7 @@ test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + 
             },
           },
           icon: { kind: 'composed', value: { kind: 'componentRef', value: { source: 'project', id: slotIconMeta.id } } },
-          caption: { kind: 'composed', value: { kind: 'richText', value: { kind: 'richText', version: 1, inline: false, nodes: [{ type: 'paragraph', children: [{ type: 'text', text: 'Edit me', marks: [] }] }] } } },
+          caption: { kind: 'composed', value: {kind: 'nodes', value: {items: [{itemId: 'caption-item', kind: 'instance', instance: {kind: 'instance', instanceId: 'caption-host', componentId: richId, props: {text: {kind: 'composed', value: {kind: 'leaf', value: {type: 'string', value: 'Edit me'}}}}}}]}} },
         },
       },
     };
@@ -365,7 +366,7 @@ test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + 
     // declared array entry and an independent empty entry. A JSON round-trip preserves both
     // entry IDs and inner node IDs before TSX compilation/render equivalence is checked.
     const { buildNestedDocument } = require(path.join(fixtureDir, 'nested-demo.tsx'));
-    const nestedDocument = buildNestedDocument(byName('NestedSlotCard').id);
+    const nestedDocument = buildNestedDocument(byName('NestedSlotCard').id, richId);
     const nestedRoundTrip = JSON.parse(JSON.stringify(nestedDocument));
     assert.deepEqual(nestedRoundTrip, nestedDocument);
     assert.equal(validateComposition(nestedRoundTrip, metadata, registry).valid, true);

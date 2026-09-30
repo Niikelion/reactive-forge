@@ -1,26 +1,9 @@
-// Interactive composition-editor demo (docs/claude-handoff.md gate D
-// acceptance line, made real and interactive in a browser - see
-// docs/baseline.md "Interactive browser verification"). Extended in phase 3
-// (docs/claude-slots-handoff.md) with real slot outlets: an insertable/
-// reorderable "actions" nodes slot, a policy-restricted "icon" componentRef
-// picker, and a mark-restricted "caption" richText editor - all driven
-// through packages/editor/src/slots.ts, which calls the SAME
-// `checkSlotValue`/`resolveSlotPolicy` pair `packages/runtime`'s own
-// validation uses (docs/slot-contract.md section 8).
-//
-// A real, mounted React app (react-dom/client's createRoot), not a static
-// render. This file is bundled by scripts/build-editor-demo.cjs into a
-// single browser ESM file (demo.js) that tests/fixtures/editor-demo/index.html
-// loads as a plain `<script type="module">`. It fetches the real generated
-// metadata.json and dynamically imports the real generated bundle.js - both
-// produced by `forge codegen` + `forge bundle` against forge.demo.config.ts
-// (which reuses the real SlotCard/Greeter/Card fixture components from
-// tests/fixtures/bundle-project/, not a hand-rolled registry, now with
-// `annotationSources.colocated: true` so SlotCard's real slot rules load).
+// Interactive host demo: ordinary registered content components, grouped slots,
+// host-owned rich content editing, and the same transactional runtime validation.
 import {createRoot} from "react-dom/client"
 import {useEffect, useMemo, useState} from "react"
 import {
-    checkRichTextValue,
+    editValue,
     computeComponentRefPalette,
     computeInsertablePalette,
     getInstanceAtPath,
@@ -29,17 +12,13 @@ import {
     moveSlotItem,
     newInstanceItem,
     newTextItem,
-    plainRichText,
     removeSlotItem,
     setComponentRefProp,
-    setRichTextContent,
-    setRichTextProp,
-    toggleRichTextMark,
     useComponentPreview
 } from "@reactive-forge/editor"
 import {exportToTsx} from "@reactive-forge/runtime"
 import type {CompositionDocument, CompositionSlotItem, ValidationResult} from "@reactive-forge/runtime"
-import type {ComponentIdentity, ComponentLibraryData, ComponentMetadata, MetadataDocument, RichTextMark} from "@reactive-forge/schema"
+import type {ComponentIdentity, ComponentLibraryData, ComponentMetadata, MetadataDocument} from "@reactive-forge/schema"
 // Real import of a genuine third-party-style package (tests/fixtures/node_modules/rf-demo-widgets),
 // annotated externally via tests/fixtures/bundle-project/src/annotations/externalWidgets.ts and
 // discovered by codegen ONLY through its .d.ts (see forge.demo.config.ts's
@@ -69,7 +48,7 @@ function findComponentMeta(metadata: MetadataDocument, name: string): ComponentM
 // - its own top-level CompositionValue is "array", not a flat "nodes" list, unlike "header"
 // (a bare `ReactNode`, which stays flat "nodes"). Starts empty; SlotOutlet's insert/remove/move
 // calls (via packages/editor/src/slots.ts) manage its shape from there.
-function buildInitialDocument(slotCardId: string, slotIconId: string): CompositionDocument {
+function buildInitialDocument(slotCardId: string, slotIconId: string, richContentId: string): CompositionDocument {
     return {
         schemaVersion: 3,
         root: {
@@ -80,7 +59,7 @@ function buildInitialDocument(slotCardId: string, slotIconId: string): Compositi
                 header: {kind: "composed", value: {kind: "nodes", value: {items: [{itemId: "h1", kind: "text", value: "Reactive Forge Demo"}]}}},
                 actions: {kind: "composed", value: {kind: "array", items: []}},
                 icon: {kind: "composed", value: {kind: "componentRef", value: {source: "project", id: slotIconId}}},
-                caption: {kind: "composed", value: {kind: "richText", value: plainRichText("Edit me", false)}}
+                caption: {kind: "composed", value: {kind: "nodes", value: {items: [{kind: "instance", itemId: "caption-item", instance: {kind: "instance", instanceId: "caption-instance", componentId: richContentId, props: {text: {kind: "composed", value: {kind: "leaf", value: {type: "string", value: "Edit me"}}}}}}]}}}
             }
         }
     }
@@ -290,57 +269,21 @@ function ComponentRefOutlet({
     )
 }
 
-/** A `"richText"`-kind prop outlet: plain-text content editing plus bold/italic mark toggles, validated through `checkSlotValue`. */
-function RichTextOutlet({
-    testId, hostComponent, propName, value, library, onChange
-}: {
+/** Host-owned rich content editor: Forge only validates the ordinary component props. */
+function RichTextOutlet({testId, value, onChange}: {
     testId: string
-    hostComponent: ComponentMetadata
-    propName: string
-    value: import("@reactive-forge/schema").RichTextValueJson
-    library: ComponentLibraryData
-    onChange: (next: import("@reactive-forge/schema").RichTextValueJson) => { ok: boolean, reason?: string }
+    value: string
+    onChange: (text: string) => {ok: boolean, reason?: string}
 }) {
     const [lastRejection, setLastRejection] = useState<string | null>(null)
-    const text = value.inline
-        ? (value.nodes[0]?.text ?? "")
-        : (value.nodes[0]?.type === "paragraph" ? value.nodes[0].children[0]?.text ?? "" : "")
-    const activeMarks = value.inline
-        ? (value.nodes[0]?.marks ?? [])
-        : (value.nodes[0]?.type === "paragraph" ? value.nodes[0].children[0]?.marks ?? [] : [])
-
-    function attempt(next: import("@reactive-forge/schema").RichTextValueJson) {
-        const outcome = onChange(next)
-        setLastRejection(outcome.ok ? null : (outcome.reason ?? "Rejected."))
-    }
-
-    function toggleMark(mark: RichTextMark) {
-        // Validate BEFORE committing (checkRichTextValue calls the same checkSlotValue path
-        // onChange itself uses) purely so this outlet can show the rejection reason without
-        // relying on onChange's own state update timing.
-        const next = toggleRichTextMark(value, mark)
-        const check = checkRichTextValue(hostComponent, propName, library, next)
-        if (!check.ok) { setLastRejection(check.diagnostics.map(d => d.message).join("; ")); return }
-        attempt(next)
-    }
-
-    return (
-        <div data-testid={testId}>
-            <h3>{propName} (richText)</h3>
-            <textarea
-                data-testid={`${testId}-text`}
-                value={text}
-                onChange={e => { attempt(setRichTextContent(value, e.target.value)) }}
-            />
-            <button type="button" data-testid={`${testId}-toggle-bold`} onClick={() => { toggleMark("bold") }}>
-                {activeMarks.includes("bold") ? "Un-bold" : "Bold"}
-            </button>
-            <button type="button" data-testid={`${testId}-toggle-italic`} onClick={() => { toggleMark("italic") }}>
-                {activeMarks.includes("italic") ? "Un-italic" : "Italic"}
-            </button>
-            {lastRejection !== null && <div data-testid={`${testId}-rejection`}>Rejected: {lastRejection}</div>}
-        </div>
-    )
+    return <div data-testid={testId}>
+        <h3>caption (host rich content)</h3>
+        <textarea data-testid={`${testId}-text`} value={value} onChange={event => {
+            const outcome = onChange(event.target.value)
+            setLastRejection(outcome.ok ? null : outcome.reason ?? "Rejected.")
+        }} />
+        {lastRejection !== null && <div data-testid={`${testId}-rejection`}>Rejected: {lastRejection}</div>}
+    </div>
 }
 
 /**
@@ -354,7 +297,8 @@ function Editor({metadata, library}: LoadedLibrary) {
     const slotCardMeta = useMemo(() => findComponentMeta(metadata, "SlotCard"), [metadata])
     const slotIconMeta = useMemo(() => findComponentMeta(metadata, "SlotIcon"), [metadata])
 
-    const initialDocument = useMemo(() => buildInitialDocument(slotCardMeta.id, slotIconMeta.id), [slotCardMeta.id, slotIconMeta.id])
+    const richContentMeta = findComponentMeta(metadata, "RichContent")
+    const initialDocument = useMemo(() => buildInitialDocument(slotCardMeta.id, slotIconMeta.id, richContentMeta.id), [slotCardMeta.id, slotIconMeta.id, richContentMeta.id])
     const preview = useComponentPreview({metadata, library, initialDocument})
 
     const [savedJson, setSavedJson] = useState("")
@@ -370,7 +314,9 @@ function Editor({metadata, library}: LoadedLibrary) {
     const iconProp = root.props.icon
     const iconValue = iconProp?.kind === "composed" && iconProp.value.kind === "componentRef" ? iconProp.value.value : {source: "project" as const, id: slotIconMeta.id}
     const captionProp = root.props.caption
-    const captionValue = captionProp?.kind === "composed" && captionProp.value.kind === "richText" ? captionProp.value.value : plainRichText("", false)
+    const captionItem = captionProp?.kind === "composed" && captionProp.value.kind === "nodes" ? captionProp.value.value.items[0] : undefined
+    const textProp = captionItem?.kind === "instance" ? captionItem.instance.props.text : undefined
+    const captionValue = textProp?.kind === "composed" && textProp.value.kind === "leaf" && textProp.value.value.type === "string" ? textProp.value.value.value : ""
 
     function makeSlotOps(propName: "header" | "actions") {
         return {
@@ -486,12 +432,9 @@ function Editor({metadata, library}: LoadedLibrary) {
 
                 <RichTextOutlet
                     testId="outlet-caption"
-                    hostComponent={slotCardMeta}
-                    propName="caption"
                     value={captionValue}
-                    library={library}
                     onChange={(next) => {
-                        const result = setRichTextProp(preview.document, metadata, library, [], "caption", next)
+                        const result = editValue(preview.document, metadata, library, [{kind: "prop", propName: "caption"}, {kind: "slotItem", itemId: "caption-item"}, {kind: "instance"}, {kind: "prop", propName: "text"}], () => ({kind: "leaf", value: {type: "string", value: next}}))
                         preview.setDocument(result.document)
                         return result.ok ? {ok: true} : {ok: false, reason: result.reason}
                     }}

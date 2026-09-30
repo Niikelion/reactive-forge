@@ -72,7 +72,12 @@ function leafValue(value) { return { kind: 'leaf', value }; }
 function objectV(fields) { return { kind: 'object', fields }; }
 function arrayV(items) { return { kind: 'array', items }; }
 function nodesV(items) { return { kind: 'nodes', value: { items } }; }
-function richTextV(value) { return { kind: 'richText', value }; }
+function richContent(metadata, text, inline = false) {
+  return nodesV([{ itemId: 'rich-content', kind: 'instance', instance: {
+    kind: 'instance', instanceId: 'rich-instance', componentId: byName(metadata, 'RichContent').id,
+    props: { text: leaf({ type: 'string', value: text }), inline: leaf({ type: 'boolean', value: inline }) },
+  } }]);
+}
 function componentRefV(value) { return { kind: 'componentRef', value }; }
 
 // Top-level CompositionPropValue builders - what actually goes into instance.props[propName].
@@ -81,7 +86,6 @@ function leaf(value) { return composed(leafValue(value)); }
 function objectValue(fields) { return composed(objectV(fields)); }
 function arrayValue(items) { return composed(arrayV(items)); }
 function nodesValue(items) { return composed(nodesV(items)); }
-function richTextProp(value) { return composed(richTextV(value)); }
 function componentRefProp(value) { return composed(componentRefV(value)); }
 function callbackProp(name) { return { kind: 'callback', name }; }
 
@@ -333,7 +337,7 @@ test('editor slot outlets: palette filtering, insertion, rejection, reordering, 
           // ReactNode prop like "header" above, which has no array schema underneath it).
           actions: arrayValue([]),
           icon: componentRefProp({ source: 'project', id: slotIconMeta.id }),
-          caption: richTextProp({ kind: 'richText', version: 1, inline: false, nodes: [{ type: 'paragraph', children: [{ type: 'text', text: 'Caption', marks: [] }] }] }),
+          caption: composed(richContent(metadata, 'Caption')),
         },
       },
     };
@@ -473,52 +477,29 @@ test('editor slot outlets: insertion capacity counts the FULL resulting slot, no
   assert.equal(intoEmpty.ok, true, 'an empty maxItems:1 slot still accepts its one allowed item');
 });
 
-test('editor slot outlets: rich text mark toggling validated through checkSlotValue', async () => {
+test('editor slot outlets: host rich text components edit as ordinary nodes and reject nonmembers', async () => {
   const { metadata, registry } = await buildFixture();
   try {
     const slotCardMeta = byName(metadata, 'SlotCard');
-    const slotIconMeta = byName(metadata, 'SlotIcon');
-
-    const doc = {
-      schemaVersion: 3,
-      root: {
-        kind: 'instance',
-        instanceId: 'root-1',
-        componentId: slotCardMeta.id,
-        props: {
-          header: nodesValue([]),
-          actions: arrayValue([]),
-          icon: componentRefProp({ source: 'project', id: slotIconMeta.id }),
-          caption: richTextProp(editor.plainRichText('Hello', false)),
-        },
-      },
-    };
-    assert.equal(runtime.validateComposition(doc, metadata, registry).valid, true, JSON.stringify(runtime.validateComposition(doc, metadata, registry).diagnostics));
-
-    // caption's policy accepts only the "bold" mark, not "italic" (SlotCard's own colocated rule).
-    const bolded = editor.toggleRichTextMark(doc.root.props.caption.value.value, 'bold');
-    const okResult = editor.checkRichTextValue(slotCardMeta, 'caption', registry, bolded);
-    assert.equal(okResult.ok, true);
-    const afterBold = editor.setRichTextProp(doc, metadata, registry, [], 'caption', bolded);
-    assert.equal(afterBold.ok, true, JSON.stringify(afterBold));
-    assert.equal(afterBold.document.root.props.caption.value.value.nodes[0].children[0].marks.includes('bold'), true);
-    assert.equal(runtime.validateComposition(afterBold.document, metadata, registry).valid, true);
-
+    const doc = { schemaVersion: 3, root: { kind: 'instance', instanceId: 'root', componentId: slotCardMeta.id,
+      props: { header: nodesValue([]), actions: arrayValue([]),
+        icon: componentRefProp({ source: 'project', id: byName(metadata, 'SlotIcon').id }),
+        caption: composed(richContent(metadata, 'Hello')) } } };
+    assert.equal(runtime.validateComposition(doc, metadata, registry).valid, true);
+    const updatedRoot = editor.updateValueAtPath(doc.root, [{ kind: 'prop', propName: 'caption' }], () => richContent(metadata, 'Edited'));
+    const updated = { ...doc, root: updatedRoot };
+    assert.equal(runtime.validateComposition(updated, metadata, registry).valid, true);
     const { renderToStaticMarkup } = require('react-dom/server');
-    const html = renderToStaticMarkup(runtime.renderComposition(afterBold.document, metadata, registry));
-    assert.match(html, /<strong>Hello<\/strong>/, 'the bold mark is reflected in the rendered output');
-
-    // italic is not in caption's accepted marks list - toggling it must be rejected and leave the document unchanged.
-    const italicized = editor.toggleRichTextMark(afterBold.document.root.props.caption.value.value, 'italic');
-    const rejection = editor.setRichTextProp(afterBold.document, metadata, registry, [], 'caption', italicized);
-    assert.equal(rejection.ok, false, 'italic is not in caption\'s accepted marks list');
-    assert.ok(/italic/.test(rejection.reason) || rejection.diagnostics.some((d) => d.code === 'richtext-mark-not-accepted'));
-    assert.equal(rejection.document, afterBold.document, 'the rejected mark toggle leaves the document unchanged');
-  } finally {
-    cleanFixtureOutput();
-  }
+    assert.match(renderToStaticMarkup(runtime.renderComposition(updated, metadata, registry)), /Edited/);
+    const palette = editor.computeInsertablePalette(slotCardMeta, 'caption', [], 0, metadata, registry);
+    assert.equal(palette.find(item => item.component.id === byName(metadata, 'RichContent').id).result.ok, true);
+    assert.equal(palette.find(item => item.component.id === byName(metadata, 'Greeter').id).result.ok, false);
+    const invalid = editor.updateValueAtPath(doc.root, [{ kind: 'prop', propName: 'caption' }], () => nodesV([
+      { itemId: 'wrong', kind: 'instance', instance: { kind: 'instance', instanceId: 'wrong-instance', componentId: byName(metadata, 'TextContent').id, props: { text: leaf({ type: 'string', value: 'Plain' }) } } }
+    ]));
+    assert.equal(runtime.validateComposition({ ...doc, root: invalid }, metadata, registry).valid, false);
+  } finally { cleanFixtureOutput(); }
 });
-
 test('editor slot outlets: componentRef picker restricted to the resolved policy\'s accepts list via checkSlotValue', async () => {
   const { metadata, registry } = await buildFixture();
   try {
@@ -544,7 +525,7 @@ test('editor slot outlets: componentRef picker restricted to the resolved policy
 // `ValuePath` (packages/editor/src/preview.ts), never a hand-rolled parallel mechanism.
 // ---------------------------------------------------------------------------------------------
 
-function buildNestedDoc(nestedMeta) {
+function buildNestedDoc(nestedMeta, metadata) {
   return {
     schemaVersion: 3,
     root: {
@@ -554,7 +535,7 @@ function buildNestedDoc(nestedMeta) {
       props: {
         content: objectValue({
           header: objectV({
-            title: richTextV({ kind: 'richText', version: 1, inline: true, nodes: [{ type: 'text', text: 'Hello', marks: [] }] }),
+            title: richContent(metadata, 'Hello', true),
             subtitle: leafValue({ type: 'string', value: 'Subtitle' }),
           }),
         }),
@@ -585,11 +566,11 @@ function buildNestedDoc(nestedMeta) {
   };
 }
 
-test('editor nested addressing: content.header.title (a richText-policy field nested two plain-object levels deep) is addressable and editable via ValuePath', async () => {
+test('editor nested addressing: grouped components nested two object levels deep are editable via ValuePath', async () => {
   const { metadata, registry } = await buildFixture();
   try {
     const nestedMeta = byName(metadata, 'NestedSlotCard');
-    const doc = buildNestedDoc(nestedMeta);
+    const doc = buildNestedDoc(nestedMeta, metadata);
     assert.equal(runtime.validateComposition(doc, metadata, registry).valid, true, JSON.stringify(runtime.validateComposition(doc, metadata, registry).diagnostics));
 
     // Build the ValuePath docs/slot-contract-recursive.md section 8.1's worked example describes:
@@ -597,13 +578,12 @@ test('editor nested addressing: content.header.title (a richText-policy field ne
     // validateCompositionValue's own recursive traversal does.
     const titlePath = [{ kind: 'prop', propName: 'content' }, { kind: 'field', name: 'header' }, { kind: 'field', name: 'title' }];
     const titleValue = editor.getValueAtPath(doc.root, titlePath);
-    assert.equal(titleValue.kind, 'richText');
-    assert.equal(titleValue.value.nodes[0].text, 'Hello');
+    assert.equal(titleValue.kind, 'nodes');
+    assert.equal(titleValue.value.items[0].instance.props.text.value.value.value, 'Hello');
 
     // Commit a real change through updateValueAtPath - the same building block setPropAtPath/the
     // slot operations use, now exercised at depth 3 instead of depth 1.
-    const editedTitle = editor.toggleRichTextMark(titleValue.value, 'bold');
-    const editedInstance = editor.updateValueAtPath(doc.root, titlePath, () => ({ kind: 'richText', value: editedTitle }));
+    const editedInstance = editor.updateValueAtPath(doc.root, titlePath, () => richContent(metadata, 'Edited', true));
     const editedDoc = { ...doc, root: editedInstance };
 
     assert.notDeepEqual(editedDoc, doc, 'the edit produced a new document');
@@ -617,15 +597,14 @@ test('editor nested addressing: content.header.title (a richText-policy field ne
 
     const { renderToStaticMarkup } = require('react-dom/server');
     const html = renderToStaticMarkup(runtime.renderComposition(editedDoc, metadata, registry));
-    assert.match(html, /<strong>Hello<\/strong>/, 'the bold mark applied at content.header.title is reflected in the rendered output');
+    assert.match(html, /Edited/, 'host component content edited at depth is rendered');
 
     // A disallowed mark (only "bold" is accepted per NestedSlotCardMetadata's rule) must fail
     // validation when addressed the same way - proves policy enforcement really reaches this depth.
-    const italicTitle = editor.toggleRichTextMark(titleValue.value, 'italic');
-    const invalidInstance = editor.updateValueAtPath(doc.root, titlePath, () => ({ kind: 'richText', value: italicTitle }));
+    const invalidInstance = editor.updateValueAtPath(doc.root, titlePath, () => nodesV([{ itemId: 'plain', kind: 'text', value: 'Not registered' }]));
     const invalidDoc = { ...doc, root: invalidInstance };
     const invalidResult = runtime.validateComposition(invalidDoc, metadata, registry);
-    assert.equal(invalidResult.valid, false, 'italic is not in content.header.title\'s accepted marks list');
+    assert.equal(invalidResult.valid, false, 'plain text does not satisfy the registered RichText group');
   } finally {
     cleanFixtureOutput();
   }
@@ -635,7 +614,7 @@ test('editor nested addressing: sections.each().body (array of objects, each wit
   const { metadata, registry } = await buildFixture();
   try {
     const nestedMeta = byName(metadata, 'NestedSlotCard');
-    const doc = buildNestedDoc(nestedMeta);
+    const doc = buildNestedDoc(nestedMeta, metadata);
     assert.equal(runtime.validateComposition(doc, metadata, registry).valid, true);
 
     // Path to sec-1's own body "nodes" value: prop "sections" -> arrayItem "sec-1" -> field "body".
@@ -698,7 +677,7 @@ test('editor nested addressing: an "actions" array entry whose own value renders
   const { metadata, registry } = await buildFixture();
   try {
     const nestedMeta = byName(metadata, 'NestedSlotCard');
-    const doc = buildNestedDoc(nestedMeta);
+    const doc = buildNestedDoc(nestedMeta, metadata);
     assert.equal(runtime.validateComposition(doc, metadata, registry).valid, true);
 
     // action-1 currently holds exactly one rendered node ("Save"). Insert a second node into

@@ -9,6 +9,8 @@
 // scanned by naming convention - see external.ts.
 
 import path from "path"
+import {shortHash} from "../hash.js"
+import type {AuthoredGroups} from "./groups.js"
 import { Node, Project, SourceFile } from "ts-morph"
 import { ComponentData } from "../types.js"
 import { Diagnostic } from "../metadataTypes.js"
@@ -32,6 +34,7 @@ function isReachableFromExportedTopLevelBinding(node: Node): boolean {
 
 export interface ColocatedDiscoveryResult {
     rules: AuthoredRule[]
+    groups: AuthoredGroups[]
     // Diagnostics from calls that could not be matched to any known component identity, or whose
     // own parse produced warnings, keyed by the project component id they targeted (when
     // resolvable) so the caller can fold them into that component's ComponentMetadata.diagnostics.
@@ -49,12 +52,14 @@ function collectCallsFromFile(sourceFile: SourceFile, layer: "library" | "projec
         const parsed = parseDefineComponentMetadataCall(call, { rootDir })
         if (!parsed) continue
 
-        if (parsed.identity?.source === "project") {
+        if (parsed.identity) {
+            const id = parsed.identity.source === "project" ? parsed.identity.id : shortHash(`external\0${parsed.identity.package}\0${parsed.identity.subpath ?? ""}\0${parsed.identity.exportName}`)
+            if (parsed.groups !== undefined) result.groups.push({groups: parsed.groups, layer, location: parsed.location, componentId: id})
             for (const rule of parsed.rules)
-                result.rules.push({ rule, layer, location: parsed.location, componentId: parsed.identity.id })
+                result.rules.push({ rule, layer, location: parsed.location, componentId: id })
             if (parsed.diagnostics.length > 0) {
-                const existing = result.diagnosticsByComponentId.get(parsed.identity.id) ?? []
-                result.diagnosticsByComponentId.set(parsed.identity.id, [...existing, ...parsed.diagnostics])
+                const existing = result.diagnosticsByComponentId.get(id) ?? []
+                result.diagnosticsByComponentId.set(id, [...existing, ...parsed.diagnostics])
             }
         } else {
             result.unmatchedDiagnostics.push(...parsed.diagnostics)
@@ -63,7 +68,7 @@ function collectCallsFromFile(sourceFile: SourceFile, layer: "library" | "projec
 }
 
 export function discoverColocatedAnnotations(project: Project, components: ComponentData[], rootDir: string): ColocatedDiscoveryResult {
-    const result: ColocatedDiscoveryResult = { rules: [], diagnosticsByComponentId: new Map(), unmatchedDiagnostics: [] }
+    const result: ColocatedDiscoveryResult = { rules: [], groups: [], diagnosticsByComponentId: new Map(), unmatchedDiagnostics: [] }
 
     const scannedFiles = new Set<string>()
     for (const component of components) {
@@ -90,7 +95,7 @@ export function discoverColocatedAnnotations(project: Project, components: Compo
 // to a module whose default export is a `SlotRule[]`-bearing `defineComponentMetadata` list - the
 // same static-analysis approach, at the "project" layer.
 export function discoverOverrideAnnotations(project: Project, overrideSources: string[], rootDir: string, projectRoot: string): ColocatedDiscoveryResult {
-    const result: ColocatedDiscoveryResult = { rules: [], diagnosticsByComponentId: new Map(), unmatchedDiagnostics: [] }
+    const result: ColocatedDiscoveryResult = { rules: [], groups: [], diagnosticsByComponentId: new Map(), unmatchedDiagnostics: [] }
 
     for (const relativePath of overrideSources) {
         const absolutePath = path.resolve(projectRoot, relativePath)

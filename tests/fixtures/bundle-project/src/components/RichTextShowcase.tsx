@@ -1,3 +1,4 @@
+import {RichText} from "../../../../../packages/schema/src"
 // Fixture for tests/export.test.cjs (composition-to-TSX export, phase 3, docs/slot-contract.md
 // section 9). Additive only - does not touch SlotCard.tsx, whose own `caption` richText policy
 // (marks: ["bold"] only) is exercised by tests/runtime-v2.test.cjs's "disallowed rich-text mark"
@@ -28,7 +29,7 @@ export const RichTextShowcase = ({ body, footer }: RichTextShowcaseProps) => (
 
 export const RichTextShowcaseMetadata = defineComponentMetadata(RichTextShowcase, {
     rules: [
-        { path: ["body"], slot: { kind: "richText", inline: false, marks: ["bold", "italic"], blocks: { paragraphs: true, lists: true } } },
+        { path: ["body"], slot: { kind: "components", accepts: [RichText] } },
         { path: ["footer"], slot: { kind: "any", maxItems: 1 } },
     ],
 });

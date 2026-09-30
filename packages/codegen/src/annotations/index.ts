@@ -3,9 +3,11 @@
 // `ComponentMetadata.slots`/`external`/`MetadataDocument.externalLibraries` fields
 // `generate.ts`'s `buildMetadataDocument` writes.
 
+import {mergeComponentGroups} from "./groups.js"
+import type {AuthoredGroups} from "./groups.js"
 import { Project } from "ts-morph"
 import { registerCommonSchemas } from "@reactive-forge/schema"
-import type { PropMetadata } from "@reactive-forge/schema"
+import type { PropMetadata, ComponentGroup } from "@reactive-forge/schema"
 import type { AnnotationSourcesConfig } from "../index.js"
 import { ComponentData } from "../types.js"
 import { Diagnostic } from "../metadataTypes.js"
@@ -25,6 +27,7 @@ export interface ExternalComponentResult {
 
 export interface SlotAnnotationResult {
     used: boolean
+    groupsByComponentId: Map<string, ComponentGroup[]>
     slotsByComponentId: Map<string, EffectiveSlotRule[]>
     extraDiagnosticsByComponentId: Map<string, Diagnostic[]>
     externalComponents: ExternalComponentResult[]
@@ -84,6 +87,7 @@ export function buildSlotAnnotations(
 ): SlotAnnotationResult {
     const result: SlotAnnotationResult = {
         used: false,
+        groupsByComponentId: new Map(),
         slotsByComponentId: new Map(),
         extraDiagnosticsByComponentId: new Map(),
         externalComponents: [],
@@ -101,17 +105,20 @@ export function buildSlotAnnotations(
 
     const colocatedEnabled = annotationSources.colocated ?? true
     const allRules: AuthoredRule[] = []
+    const allGroups: AuthoredGroups[] = []
 
     if (colocatedEnabled) {
         const colocated = discoverColocatedAnnotations(project, components, rootDir)
         allRules.push(...colocated.rules)
+        allGroups.push(...colocated.groups)
         for (const [id, diagnostics] of colocated.diagnosticsByComponentId) addDiagnostics(result.extraDiagnosticsByComponentId, id, diagnostics)
-        if (colocated.rules.length > 0 || colocated.unmatchedDiagnostics.length > 0) result.used = true
+        if (colocated.rules.length > 0 || colocated.groups.length > 0 || colocated.diagnosticsByComponentId.size > 0 || colocated.unmatchedDiagnostics.length > 0) result.used = true
     }
 
     if (annotationSources.overrideSources && annotationSources.overrideSources.length > 0) {
         const overrides = discoverOverrideAnnotations(project, annotationSources.overrideSources, rootDir, rootDir)
         allRules.push(...overrides.rules)
+        allGroups.push(...overrides.groups)
         for (const [id, diagnostics] of overrides.diagnosticsByComponentId) addDiagnostics(result.extraDiagnosticsByComponentId, id, diagnostics)
         result.used = true
     }
@@ -119,10 +126,19 @@ export function buildSlotAnnotations(
     if (annotationSources.libraries && annotationSources.libraries.length > 0) {
         const external = resolveLibraryAnnotationSources(project, annotationSources.libraries, rootDir, rootDir, classOptions)
         allRules.push(...external.rules)
+        allGroups.push(...external.groups)
         result.externalLibraries = external.libraryRefs
         for (const [id, componentData] of external.externalComponents)
             result.externalComponents.push({ id, data: componentData, external: componentData.external })
         result.used = true
+    }
+
+    const groupsByComponent = new Map<string, AuthoredGroups[]>()
+    for (const entry of allGroups) groupsByComponent.set(entry.componentId, [...(groupsByComponent.get(entry.componentId) ?? []), entry])
+    for (const [id, entries] of groupsByComponent) {
+        const merged = mergeComponentGroups(entries)
+        result.groupsByComponentId.set(id, merged.groups)
+        addDiagnostics(result.extraDiagnosticsByComponentId, id, merged.diagnostics)
     }
 
     const rulesByComponent = new Map<string, AuthoredRule[]>()

@@ -1,5 +1,5 @@
 import {useMemo, useState} from "react"
-import {ComponentPalette, CompositionEditor, generateId, plainRichText} from "@reactive-forge/editor"
+import {ComponentPalette, CompositionEditor, generateId} from "@reactive-forge/editor"
 import {exportToTsx, renderComposition, validateComposition} from "@reactive-forge/runtime"
 import type {CompositionDocument, CompositionInstance, CompositionValue} from "@reactive-forge/runtime"
 import type {ComponentLibraryData, ComponentMetadata, MetadataDocument} from "@reactive-forge/schema"
@@ -10,6 +10,9 @@ export function createDemoInstance(component: ComponentMetadata): CompositionIns
     if (component.name === "Greeter") {
         instance.props.name = {kind: "composed", value: {kind: "leaf", value: {type: "string", value: "Nested visitor"}}}
     }
+    if (component.name === "RichContent" || component.name === "TextContent") {
+        instance.props.text = {kind: "composed", value: {kind: "leaf", value: {type: "string", value: "Editable text"}}}
+    }
     // Components without required arguments need no extra setup. Required arguments without
     // explicit demo defaults are refused; full insertion validation remains the final authority.
     if (Object.entries(component.props).some(([name, prop]) => prop.required && !(name in instance.props))) return undefined
@@ -19,7 +22,7 @@ export function createDemoInstance(component: ComponentMetadata): CompositionIns
 const text = (value: string): CompositionValue => ({kind: "leaf", value: {type: "string", value}})
 const nodes = (value: string, itemId: string): CompositionValue => ({kind: "nodes", value: {items: [{kind: "text", itemId, value}]}})
 
-export function buildNestedDocument(componentId: string): CompositionDocument {
+export function buildNestedDocument(componentId: string, richContentId: string): CompositionDocument {
     return {
         schemaVersion: 3,
         root: {
@@ -27,7 +30,7 @@ export function buildNestedDocument(componentId: string): CompositionDocument {
             props: {
                 content: {kind: "composed", value: {kind: "object", fields: {
                     header: {kind: "object", fields: {
-                        title: {kind: "richText", value: plainRichText("Editable nested title", true)},
+                        title: {kind: "nodes", value: {items: [{kind: "instance", itemId: "title-item", instance: {kind: "instance", instanceId: "title-instance", componentId: richContentId, props: {text: {kind: "composed", value: text("Editable nested title")}, inline: {kind: "composed", value: {kind: "leaf", value: {type: "boolean", value: true}}}}}}]}},
                         subtitle: text("Drop a component into a section below")
                     }}
                 }}},
@@ -50,7 +53,9 @@ export function buildNestedDocument(componentId: string): CompositionDocument {
 export function NestedEditorDemo({metadata, library}: {metadata: MetadataDocument, library: ComponentLibraryData}) {
     const component = metadata.components.find(entry => entry.name === "NestedSlotCard")
     if (component === undefined) throw new Error("NestedSlotCard metadata is missing")
-    const initialDocument = useMemo(() => buildNestedDocument(component.id), [component.id])
+    const richContent = metadata.components.find(entry => entry.name === "RichContent")
+    if (richContent === undefined) throw new Error("RichContent metadata is missing")
+    const initialDocument = useMemo(() => buildNestedDocument(component.id, richContent.id), [component.id, richContent.id])
     const [document, setDocument] = useState(initialDocument)
     const [snapshot, setSnapshot] = useState("")
     const [source, setSource] = useState("")

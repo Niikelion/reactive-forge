@@ -1,4 +1,7 @@
-import type {ComponentIdentity, RichTextValueJson, ValueJson, VariantLiteral} from "@reactive-forge/schema"
+import type {ComponentIdentity, ValueJson, VariantLiteral} from "@reactive-forge/schema"
+
+/** Historical payload, retained only as input to explicit legacy migrations. */
+interface RichTextValueJson {kind: "richText", version: 1, inline: boolean, nodes: unknown[]}
 
 // Composition document contract, v3 (docs/slot-contract-recursive.md), extending the v2 shape
 // docs/slot-contract.md section 7 introduced. See docs/slot-contract-recursive.md section 7.1.
@@ -55,7 +58,6 @@ export type CompositionValue =
     // The three existing slot-domain leaf kinds, UNCHANGED in their own inner shape from v2 — only
     // their position in the tree generalizes (any depth, not just top-level prop).
     | { kind: "componentRef", value: ComponentIdentity }
-    | { kind: "richText", value: RichTextValueJson }
     | { kind: "nodes", value: CompositionSlotValue }
 
 /**

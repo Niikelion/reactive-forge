@@ -3,7 +3,7 @@ import {ComponentData} from "./types.js";
 import path from "path";
 import fs from "fs/promises";
 import {Logger} from "./utils.js";
-import {ObjectSchema, resolveEditorPresentation} from "@reactive-forge/schema";
+import {ObjectSchema, resolveEditorPresentation, isComponentGroup} from "@reactive-forge/schema";
 import type {EffectiveSlotRule} from "@reactive-forge/schema";
 import {componentId} from "./hash.js";
 import {ComponentMetadata, Diagnostic, MetadataDocument} from "./metadataTypes.js";
@@ -61,6 +61,7 @@ function buildMetadataDocument(
             sourcePath: relativeSourcePath,
             isDefault: component.isDefault,
             ...(component.description !== undefined ? { description: component.description } : {}),
+            ...(annotations.groupsByComponentId.has(id) ? {groups: annotations.groupsByComponentId.get(id)} : {}),
             props: buildProps(component),
             diagnostics: [...component.diagnostics, ...extraDiagnostics],
             ...(annotations.used ? presentationRules(slots ?? []) : {})
@@ -76,6 +77,7 @@ function buildMetadataDocument(
             sourcePath: external.data.sourcePath.replace(/\\/g, "/"),
             isDefault: external.external.isDefault,
             ...(external.data.description !== undefined ? { description: external.data.description } : {}),
+            ...(annotations.groupsByComponentId.has(external.id) ? {groups: annotations.groupsByComponentId.get(external.id)} : {}),
             props: buildProps(external.data),
             diagnostics: [...external.data.diagnostics, ...extraDiagnostics],
             ...presentationRules(slots),
@@ -90,7 +92,7 @@ function buildMetadataDocument(
     }
 
     return {
-        schemaVersion: metaComponents.some(c => JSON.stringify(c.props).includes('"type":"instance"')) ? 3 : annotations.used ? 2 : 1,
+        schemaVersion: metaComponents.some(c => c.groups !== undefined || c.slots?.some(rule => rule.slot && "accepts" in rule.slot && rule.slot.accepts.some(isComponentGroup))) ? 4 : metaComponents.some(c => JSON.stringify(c.props).includes('"type":"instance"')) ? 3 : annotations.used ? 2 : 1,
         generatedAt: new Date().toISOString(),
         components: metaComponents,
         ...(annotations.used ? { externalLibraries: annotations.externalLibraries } : {})
@@ -227,6 +229,8 @@ export async function generateFiles(project: Project, components: ComponentData[
     for (const target of [...modules.map(module => module.targetPath), aggregatePath])
         await assertGeneratedTarget(project, target, sourcePaths)
 
+    const metadataDocument = buildMetadataDocument(project, components, rootDir, annotationSources, classBindings)
+    const metadataById = new Map(metadataDocument.components.map(component => [component.id, component]))
     const outputFiles: SourceFile[] = []
     for (const module of modules) {
         const resultFile = project.createSourceFile(module.targetPath, "", { overwrite: true })
@@ -255,7 +259,8 @@ export async function generateFiles(project: Project, components: ComponentData[
             // `id` and metadata.json's `ComponentMetadata.id` are computed by the exact same
             // function so they can never drift apart (docs/baseline.md "Known gap").
             const id = componentId(rootDir, component.sourcePath, component.name)
-            return `\t\t[${JSON.stringify(component.name)}]: {\n\t\t\tid: ${JSON.stringify(id)},\n\t\t\tcomponent: ${localName} as FC,\n\t\t\targs: ${argsJson}\n\t\t}`
+            const groups = metadataById.get(id)?.groups
+            return `\t\t[${JSON.stringify(component.name)}]: {\n\t\t\tid: ${JSON.stringify(id)},\n\t\t\tcomponent: ${localName} as FC,\n\t\t\targs: ${argsJson}${groups !== undefined ? `,\n\t\t\tgroups: ${JSON.stringify(groups)}` : ""}\n\t\t}`
         }).join(",\n")
 
         resultFile.addStatements(
@@ -291,8 +296,17 @@ export async function generateFiles(project: Project, components: ComponentData[
         })
         return alias
     })
+    const groups = new Map<string, {kind: "group", id: string}>()
+    for (const component of metadataDocument.components) {
+        for (const group of component.groups ?? []) groups.set(group.id, group)
+        for (const rule of component.slots ?? []) {
+            if (!rule.slot || !("accepts" in rule.slot)) continue
+            for (const acceptance of rule.slot.accepts)
+                if (isComponentGroup(acceptance)) groups.set(acceptance.id, acceptance)
+        }
+    }
     aggregateFile.addStatements(
-        `export const components: ComponentLibraryData = {\n\tfiles: [\n${libraryFiles.map(file => `\t\t${file}`).join(",\n")}\n\t]${adapterEntries.length ? `,\n\tvalueAdapters: {${adapterEntries.join(",")}}` : ""}\n}`
+        `export const components: ComponentLibraryData = {\n\tfiles: [\n${libraryFiles.map(file => `\t\t${file}`).join(",\n")}\n\t]${adapterEntries.length ? `,\n\tvalueAdapters: {${adapterEntries.join(",")}}` : ""}${groups.size ? `,\n\tcomponentGroups: ${JSON.stringify([...groups.values()])}` : ""}\n}`
     )
     aggregateFile.formatText()
     aggregateFile.insertText(0, `${generatedMarker}\n`)
@@ -302,7 +316,6 @@ export async function generateFiles(project: Project, components: ComponentData[
 
     // Additive metadata artifact (docs/metadata-contract.md). Never alters
     // the wrapper/aggregate content or layout generated above.
-    const metadataDocument = buildMetadataDocument(project, components, rootDir, annotationSources, classBindings)
     await writeMetadataDocument(outputRoot, metadataDocument)
 
     // Surface diagnostics to whoever is running codegen, without dumping

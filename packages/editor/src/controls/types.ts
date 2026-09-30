@@ -9,7 +9,7 @@ import {DefaultValueJson, Json, SchemaJson, ValueJson} from "@reactive-forge/sch
 // function-typed prop, or `{kind:"composed", value: CompositionValue}` for
 // everything else. Every DEFAULT control here only ever reads/writes the
 // `{kind:"leaf", value: ValueJson}` case of `CompositionValue` (see
-// `resolveInitialValueJson`) - a "nodes"/"richText"/"componentRef"/"object"/
+// `resolveInitialValueJson`) - a "nodes"/"componentRef"/"object"/
 // "array"/"variant" value at this position is slot-domain content, handled
 // by packages/editor/src/slots.ts's dedicated operations instead, never by
 // an ordinary `PropControl`.

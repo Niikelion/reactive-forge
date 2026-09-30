@@ -8,6 +8,8 @@ import type {AnnotationSourcesConfig} from "./slotTypes.js";
 
 export type {AnnotationSourcesConfig} from "./slotTypes.js";
 export type {ClassBinding} from "./classBindings.js";
+export {defineComponentMetadata, defineLibraryMetadata, externalComponent, each, variant, defineComponentGroup, Text, RichText} from "./slotAuthoring.js";
+export type {AuthorSlotRule, AuthorSlotPolicy, AuthorComponentReference, ExternalComponentRef} from "./slotAuthoring.js";
 
 // docs/slot-contract.md section 5, "Annotation source discovery (config)". `metadataModule`
 // entries and `overrideSources` are resolved to absolute paths by fillConfig below, the same

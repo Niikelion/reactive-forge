@@ -3,6 +3,7 @@ import {DefaultValueJson, ValueJson} from "@/schema/ValueJson";
 import {EffectiveSlotRule} from "@/schema/SlotPolicy";
 import {ExternalComponentIdentity} from "@/schema/ComponentIdentity";
 import type {EditorRule, PropProvenance} from "@/schema/EditorPresentation";
+import type {ComponentGroup} from "@/schema/ComponentGroup";
 
 // Plain types mirroring docs/metadata-contract.md exactly. This is the portable, JSON-safe
 // document shape a compiler-coupled extractor (packages/codegen) produces and a
@@ -28,6 +29,7 @@ export interface PropMetadata {
 }
 
 export interface ComponentMetadata {
+    groups?: ComponentGroup[]
     editorRules?: EditorRule[]
     id: string
     name: string
@@ -56,7 +58,7 @@ export interface ExternalLibraryRef {
 }
 
 export interface MetadataDocument {
-    schemaVersion: 1 | 2 | 3
+    schemaVersion: 1 | 2 | 3 | 4
     generatedAt: string
     components: ComponentMetadata[]
     // v2 only. Present iff any component's slots reference an external identity. Empty array,

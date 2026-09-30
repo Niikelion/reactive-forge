@@ -57,6 +57,14 @@ function byName(metadata, name) {
   return found;
 }
 
+function richValue(metadata, text, id, italicText) {
+  const props = {text: {kind: 'composed', value: {kind: 'leaf', value: {type: 'string', value: text}}}};
+  if (italicText) props.italicText = {kind: 'composed', value: {kind: 'leaf', value: {type: 'string', value: italicText}}};
+  return {kind: 'nodes', value: {items: [{itemId: `${id}-item`, kind: 'instance', instance: {
+    kind: 'instance', instanceId: id, componentId: byName(metadata, 'RichContent').id, props
+  }}]}};
+}
+
 async function buildFixture() {
   cleanFixtureOutput();
   const codegenResult = runCli(['codegen', '--config', 'forge.export.config.ts'], fixtureProject);
@@ -68,7 +76,9 @@ async function buildFixture() {
   const metadataPath = path.join(fixtureOutDir, 'metadata.json');
   const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
   const registry = (await import(pathToFileURL(bundlePath).href)).components;
-  assert.equal(metadata.schemaVersion, 2, 'annotationSources.colocated produces a schemaVersion 2 metadata document');
+  assert.equal(metadata.schemaVersion, 4, 'group constraints use metadata schemaVersion 4');
+  const richEntry = registry.files.flatMap(file => Object.values(file.components)).find(entry => entry.id === byName(metadata, 'RichContent').id);
+  assert.ok(richEntry.groups.some(group => group.id === 'forge/RichText'), 'generated registration preserves host-declared membership');
   return { metadata, registry };
 }
 
@@ -267,10 +277,7 @@ test('exportToTsx serializes "nodes"/"richText"/"componentRef" slot values ident
           caption: {
             kind: 'composed',
             value: {
-              kind: 'richText',
-              value: { kind: 'richText', version: 1, inline: false, nodes: [
-                { type: 'paragraph', children: [{ type: 'text', text: 'Bold caption', marks: ['bold'] }] },
-              ] },
+              ...richValue(metadata, 'Bold caption', 'caption-rich'),
             },
           },
           // "children" - an ordinary "nodes" prop like any other (no special sibling field), here
@@ -289,11 +296,7 @@ test('exportToTsx serializes "nodes"/"richText"/"componentRef" slot values ident
                         body: {
                           kind: 'composed',
                           value: {
-                            kind: 'richText',
-                            value: { kind: 'richText', version: 1, inline: false, nodes: [
-                              { type: 'paragraph', children: [{ type: 'text', text: 'Bold text', marks: ['bold'] }] },
-                              { type: 'bulletList', items: [{ type: 'listItem', children: [{ type: 'text', text: 'Italic item', marks: ['italic'] }] }] },
-                            ] },
+                            ...richValue(metadata, 'Bold text', 'body-rich', 'Italic item'),
                           },
                         },
                         // A bare ReactNode "nodes" slot with an EXPLICIT rule (`{kind: "any",
@@ -345,9 +348,9 @@ test('exportToTsx serializes "nodes"/"richText"/"componentRef" slot values ident
     assert.match(tsxSource, /icon=\{SlotIcon\}/, 'componentRef emits a bare identifier expression, not JSX and not a call');
     assert.doesNotMatch(tsxSource, /icon=\{<SlotIcon/, 'componentRef is never JSX-wrapped');
     // "richText": the same fixed <p>/<strong> mapping render.ts produces.
-    assert.match(tsxSource, /caption=\{<><p><strong>\{"Bold caption"\}<\/strong><\/p><\/>\}/, 'richText serializes through the fixed paragraph/strong mapping');
+    assert.match(tsxSource, /caption=\{<RichContent/, 'rich content exports as a host component');
     // "richText" with both bold+italic marks and both paragraph/list blocks, nested under "children".
-    assert.match(tsxSource, /<p><strong>\{"Bold text"\}<\/strong><\/p><ul><li><em>\{"Italic item"\}<\/em><\/li><\/ul>/, 'a richText value with bold+italic marks and mixed paragraph/list blocks serializes through the fixed mapping');
+    assert.match(tsxSource, /italicText="Italic item"/, 'host component props export unchanged');
     // "nodes": a single item under an EXPLICITLY-authored rule that does not itself restate
     // `multiple` (RichTextShowcase's `footer` rule is `{kind: "any", maxItems: 1}`, no `multiple`
     // key) stays BARE - no Fragment - mirroring render.ts's precise `"multiple" in slot` check
@@ -390,7 +393,7 @@ test('exportToTsx refuses an invalid document instead of silently serializing it
           header: { kind: 'composed', value: { kind: 'nodes', value: { items: [] } } },
           actions: { kind: 'composed', value: { kind: 'nodes', value: { items: [] } } },
           icon: { kind: 'composed', value: { kind: 'componentRef', value: { source: 'project', id: greeterMeta.id } } },
-          caption: { kind: 'composed', value: { kind: 'richText', value: { kind: 'richText', version: 1, inline: false, nodes: [] } } },
+          caption: { kind: 'composed', value: {kind: 'nodes', value: {items: []}} },
         },
       },
     };

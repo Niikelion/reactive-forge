@@ -14,6 +14,8 @@ import { extractExternalComponentData } from "../extract.js"
 import type {ClassExtractionOptions} from "../classBindings.js"
 import { shortHash } from "../hash.js"
 import { ExternalComponentIdentity, ExternalLibraryRef, LibraryAnnotationSource, SlotRule } from "../slotTypes.js"
+import type {AuthoredGroups} from "./groups.js"
+import type {ComponentGroup} from "@reactive-forge/schema"
 import { AuthoredRule } from "./merge.js"
 import { parseDefineComponentMetadataCall } from "./parseRules.js"
 
@@ -74,11 +76,13 @@ export interface ExternalResolutionResult {
     libraryRefs: ExternalLibraryRef[]
     externalComponents: Map<string, ComponentData & { external: ExternalComponentIdentity }>
     rules: AuthoredRule[]
+    groups: AuthoredGroups[]
 }
 
 interface ParsedLibraryEntry {
     identity: ExternalComponentIdentity | undefined
     rules: SlotRule[]
+    groups?: ComponentGroup[]
     diagnostics: Diagnostic[]
     location: Diagnostic["location"]
 }
@@ -112,7 +116,7 @@ export function resolveLibraryAnnotationSources(
     projectRoot: string,
     classOptions: ClassExtractionOptions = {}
 ): ExternalResolutionResult {
-    const result: ExternalResolutionResult = { libraryRefs: [], externalComponents: new Map(), rules: [] }
+    const result: ExternalResolutionResult = { libraryRefs: [], externalComponents: new Map(), rules: [], groups: [] }
 
     for (const library of libraries) {
         const diagnostics: Diagnostic[] = []
@@ -148,6 +152,7 @@ export function resolveLibraryAnnotationSources(
                             entries.push({
                                 identity: parsed.identity?.source === "external" ? parsed.identity : undefined,
                                 rules: parsed.rules,
+                                groups: parsed.groups,
                                 diagnostics: parsed.diagnostics,
                                 location: parsed.location
                             })
@@ -207,6 +212,7 @@ export function resolveLibraryAnnotationSources(
                 if (!existing) {
                     result.externalComponents.set(key, { ...componentData, external: entry.identity })
                 }
+                if (entry.groups !== undefined) result.groups.push({groups: entry.groups, layer: "library", location: entry.location, componentId: id})
                 for (const rule of entry.rules) result.rules.push({ rule, layer: "library", location: entry.location, componentId: id })
             }
         }

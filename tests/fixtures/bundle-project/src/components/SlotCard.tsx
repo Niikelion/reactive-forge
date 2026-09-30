@@ -1,3 +1,4 @@
+import {RichText} from "../../../../../packages/schema/src"
 // Fixture for tests/runtime-v2.test.cjs (composition runtime v2, docs/slot-contract.md sections
 // 7-8, 10). Exercises, in one component, every CompositionPropValue kind phase 2 adds:
 //  - `actions: ReactNode[]` - a declared array of action nodes, mirroring the contract's own
@@ -42,6 +43,6 @@ export const SlotCardMetadata = defineComponentMetadata(SlotCard, {
         { path: ["actions"], collection: { maxItems: 3 } },
         { path: ["actions", each()], slot: { kind: "any", maxItems: 1 } },
         { path: ["icon"], slot: { kind: "componentRef", accepts: [SlotIcon] } },
-        { path: ["caption"], slot: { kind: "richText", inline: false, marks: ["bold"], blocks: { paragraphs: true, lists: false } } },
+        { path: ["caption"], slot: { kind: "components", accepts: [RichText] } },
     ],
 });

@@ -4,6 +4,7 @@ const React = require('react');
 const {renderToStaticMarkup} = require('react-dom/server');
 const {CompositionEditor} = require('../packages/editor/src/index.ts');
 const {renderComposition} = require('../packages/runtime/src/index.ts');
+const {RichText} = require('../packages/schema/src/index.ts');
 
 const nodeSchema = {type: 'reactNode'};
 const object = properties => ({type: 'object', properties});
@@ -42,6 +43,40 @@ const nested = () => document('Nested', {
 const renderEditor = (doc, extra = {}) => renderToStaticMarkup(React.createElement(CompositionEditor, {
   document: doc, metadata, library, onChange: () => assert.fail('SSR must not commit edits'), ...extra,
 }));
+
+test('host component editor replaces a grouped implementation and validates ordinary prop changes', () => {
+  const richProps = {text: property({type: 'string'})};
+  const RichContent = ({text}) => React.createElement('strong', null, text);
+  const hostMetadata = {schemaVersion: 4, components: [
+    component('Empty', emptyProps, [{path: ['children'], slot: {kind: 'components', accepts: [RichText], multiple: true}}]),
+    component('RichContent', richProps),
+  ]};
+  const hostLibrary = {files: [{path: 'host.tsx', components: {
+    Empty: {id: 'Empty', component: Empty, args: object(emptyProps)},
+    RichContent: {id: 'RichContent', component: RichContent, args: object(richProps), groups: [RichText]},
+  }}]};
+  const stringProp = value => composed({kind: 'leaf', value: {type: 'string', value}});
+  const doc = document('Empty', {children: composed(nodes([{itemId: 'rich-item', kind: 'instance', instance: {
+    kind: 'instance', instanceId: 'rich-instance', componentId: 'RichContent', props: {text: stringProp('Hello')},
+  }}]))});
+  const changes = [];
+  let hostContext;
+  const html = renderEditor(doc, {metadata: hostMetadata, library: hostLibrary, onChange: value => changes.push(value), renderComponent: context => {
+    if (context.instance.componentId !== 'RichContent') return context.element;
+    hostContext = context;
+    return React.createElement('textarea', {'data-host-editor': 'rich', defaultValue: context.instance.props.text.value.value.value});
+  }});
+  assert.match(html, /<textarea data-host-editor="rich">Hello<\/textarea>/);
+  assert.doesNotMatch(html, /<strong>/, 'host editing UI replaces the normal registered component output');
+  assert.deepEqual(hostContext.path, [{kind: 'prop', propName: 'children'}, {kind: 'slotItem', itemId: 'rich-item'}, {kind: 'instance'}]);
+  hostContext.onChange({text: stringProp('Edited')});
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].root.props.children.value.value.items[0].instance.componentId, 'RichContent');
+  assert.match(renderToStaticMarkup(renderComposition(changes[0], hostMetadata, hostLibrary)), /<strong>Edited<\/strong>/);
+  hostContext.onChange({text: composed({kind: 'leaf', value: {type: 'number', value: 42}})});
+  assert.equal(changes.length, 1, 'invalid host edits do not commit');
+  assert.equal(doc.root.props.children.value.value.items[0].instance.props.text.value.value.value, 'Hello', 'the original composition is untouched');
+});
 
 test('canvas places nested outlets where components render actual prop values', () => {
   const html = renderEditor(nested());

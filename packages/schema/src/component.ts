@@ -1,7 +1,9 @@
 import type { FC } from "react"
 import type { SchemaJson } from "./schema/Schema"
+import type {ComponentGroup, GroupValueFactory} from "./schema/ComponentGroup"
 
 export interface ComponentEntry {
+    groups?: ComponentGroup[]
     // Stable component identity, matching `ComponentMetadata.id` in the portable
     // metadata document (docs/metadata-contract.md, "Stable component identity").
     // Computed by the same function (`componentId` in packages/codegen/src/hash.ts)
@@ -17,6 +19,8 @@ export interface ComponentFileData {
 }
 
 export interface ComponentLibraryData {
+    groupValueFactories?: GroupValueFactory[]
+    componentGroups?: ComponentGroup[]
     valueAdapters?: import("./schema/Instance").ValueAdapterRegistry
     files: ComponentFileData[]
 }
