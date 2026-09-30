@@ -1,6 +1,6 @@
 {
   "name": "@reactive-forge/editor",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "license": "MIT",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -23,8 +23,8 @@
     "build": "tsdown && attw --pack ."
   },
   "dependencies": {
-    "@reactive-forge/runtime": "1.0.0",
-    "@reactive-forge/schema": "1.0.0",
+    "@reactive-forge/runtime": "2.0.0",
+    "@reactive-forge/schema": "2.0.0",
     "react": "^19.1.0"
   },
   "devDependencies": {
@@ -35,5 +35,10 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Niikelion/reactive-forge.git",
+    "directory": "packages/editor"
   }
 }
