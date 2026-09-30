@@ -1,77 +1,28 @@
 # Reactive Forge
 
-> This project is being rebuilt. The usage and UI documentation below describe the earlier implementation; the current checkout contains schema and code-generation packages. See the [development plan](docs/development-plan.md) and [verified baseline](docs/baseline.md) for current capabilities, checks, and known regressions.
-
-Reactive Forge is a metadata generator for react components.
-It generates files exposing list of components with descriptions of their arguments.
-Can be used to create component library preview or ui designer with components imported from code.
-
-## Features
-
-* Extraction of component metadata
-* Rendering the component from metadata and argument values with typechecking
-* Easily creating preview of your component with option to edit arguments from the ui
-
-## Getting started
-
-First, install `@reactive-forge/codegen` package:
-
-```shell
-npm install -D @reactive-forge/codegen
-```
-
-or
-
-```shell
-yarn add --dev @reactive-forge/codegen
-```
-
-Then run `npx forge init` and follow instructions in the command line.
-Last, but not least, add `forge &&` at the beginning of your dev and build scripts.
-And with that, you're good to go!
+Extract exported React components into portable prop metadata and a component registry. Compose them visually, validate and render compositions, and export them to TSX.
 
 ## Packages
 
-List of Reactive Forge packages with links to their documentations:
+- [codegen](packages/codegen/README.md): extraction, annotations, registry generation and browser bundling.
+- [schema](packages/schema/README.md): portable schemas, slot policies and prop presentation.
+- [runtime](packages/runtime/README.md): validation, rendering, class adapters and TSX export.
+- [editor](packages/editor/README.md): preview, prop controls and nested composition canvas.
 
-* [@reactive-forge/codegen](packages/codegen/README.md)
-* [@reactive-forge/ui](packages/ui/README.md)
-* [@reactive-forge/shared](packages/shared/README.md)
+The coordinated 2.0.0 release is prepared; see [CHANGELOG.md](CHANGELOG.md). Package versions are separate from document schema versions.
 
-## Supported argument types
+## Development
 
-Since Reactive Forge handles schema validation and values creation, some restrictions were placed on component argument types.
-See the table below:
+Run yarn install, yarn build, yarn typecheck, yarn lint, yarn test:regressions and yarn check:packages.
 
-| Type                    | Supported | Remarks                                                                                               |
-|-------------------------|-----------|-------------------------------------------------------------------------------------------------------|
-| undefined               | ✔         |                                                                                                       |
-| null                    | ✔         |                                                                                                       |
-| boolean                 | ✔         | boolean literals are also supported                                                                   |
-| number                  | ✔         | number literals are also supported                                                                    |
-| string                  | ✔         | string literals are also supported                                                                    |
-| string template literal | ❌         | not planned                                                                                           |
-| Date                    | ✔         |                                                                                                       |
-| BigInt                  | ❌         | if you need this type to be supported, create an issue for it                                         |
-| unknown                 | ❌         | may be added in the future                                                                            |
-| any                     | ❌         | may be added in the future                                                                            |
-| never                   | ❌         | may be added in the future                                                                            |
-| class                   | ❌         | may be added in the future                                                                            |
-| symbol                  | ❌         | not planned                                                                                           |
-| array                   | ✔         |                                                                                                       |
-| tuple                   | ✔         | will be supported in the future                                                                       |
-| object                  | ✔*        | optional properties with unsupported types will be dropped, see below for implications                |
-| function                | ❌*        | will be partially supported in the future                                                             |
-| union                   | ✔         |                                                                                                       |
-| intersection            | ✔*        | you can have intersections in your type, they will be evaluated and stripped before schema generation |
-| cyclic                  | ❌         | schema format does not support references                                                             |
-| ReactNode               | ✔         |                                                                                                       |
+Test utilities live in tests/support/. Build the interactive fixture with node tests/support/build-editor-demo.cjs.
 
-Due to the fact, that optional object properties that have unsupported type are dropped before intersections are calculated,
-it is possible that intersection of object types will be incorrectly calculated - resulting type will be broader than it should be.
+## Capabilities
 
-## Planned features:
+- Public component discovery through configured source directories, entry files and reexports.
+- Colocated and external annotations for nested ReactNode slots, allowed components and rich text.
+- Prop presentation based on provenance, required inputs and explicit overrides.
+- Date, URL, Map, Set, RegExp and explicitly registered custom class values.
+- Versioned compositions, independent component bundles and validated TSX export.
 
-* Rendering custom components defined in json format
-* Compiling custom components defined in json format into tsx and jsx
-* Partial support for functions
+Class payloads are trees: cycles and shared reference identity are not preserved. Constructor references and resource handles require separate host integration.

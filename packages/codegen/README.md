@@ -12,4 +12,4 @@ Configure source directories or entry files with `componentRoots`. Extraction fo
 
 Version 2 is a breaking rebuild of the original codegen package. Use the matching version-2 schema, runtime and editor packages. The old shared/ui package APIs are not drop-in replacements.
 
-See [Reactive Forge](https://github.com/Niikelion/reactive-forge) and the [class adapter guide](https://github.com/Niikelion/reactive-forge/blob/master/docs/class-values-implementation-report.md).
+See [Reactive Forge](https://github.com/Niikelion/reactive-forge) and the [Reactive Forge](https://github.com/Niikelion/reactive-forge).

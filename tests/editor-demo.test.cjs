@@ -1,5 +1,5 @@
 // Automated regression coverage for the interactive composition-editor demo
-// (tests/fixtures/editor-demo/, scripts/build-editor-demo.cjs), which
+// (tests/fixtures/editor-demo/, tests/support/build-editor-demo.cjs), which
 // proves docs/claude-handoff.md gate D's acceptance line ("a small example
 // edits props, nests components, saves/reloads a composition, and renders
 // equivalent output") for real, interactively, in a browser - see
@@ -16,7 +16,7 @@
 //      suite uses) against forge.demo.config.ts, producing a real
 //      metadata.json + bundle.js from the real Greeter/Card fixture
 //      components.
-//   2. scripts/build-editor-demo.cjs's `buildEditorDemo`, bundling the real
+//   2. tests/support/build-editor-demo.cjs's `buildEditorDemo`, bundling the real
 //      demo.tsx entry point into a single browser ESM file.
 //   3. Static inspection of that built demo bundle - the same
 //      "grep for compiler-tooling markers, and assert every remaining
@@ -127,7 +127,7 @@ test('editor demo: forge codegen/bundle + build-editor-demo produce a self-conta
     assert.ok(!registryBundleText.includes('rf-demo-widgets'), 'forge bundle (codegen\'s own output) must never reference the external package - it only resolves its .d.ts, never imports/executes it');
 
     // --- Build the demo application bundle itself ---
-    const { buildEditorDemo, hostProvidedPeers } = require(path.join(root, 'scripts', 'build-editor-demo.cjs'));
+    const { buildEditorDemo, hostProvidedPeers } = require(path.join(root, 'tests', 'support', 'build-editor-demo.cjs'));
     const written = await buildEditorDemo({
       entry: path.join(fixtureDir, 'demo.tsx'),
       outfile: demoBundlePath,

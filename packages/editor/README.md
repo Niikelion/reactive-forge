@@ -8,4 +8,4 @@ npm install @reactive-forge/editor@2 @reactive-forge/runtime@2 @reactive-forge/s
 
 Core APIs include `CompositionEditor`, `ComponentPalette`, `PropControl` and `useComponentPreview`.
 
-See the [canvas guide](https://github.com/Niikelion/reactive-forge/blob/master/docs/editor-canvas.md) and [prop presentation rules](https://github.com/Niikelion/reactive-forge/blob/master/docs/editor-presentation.md).
+See the [Reactive Forge](https://github.com/Niikelion/reactive-forge) and [Reactive Forge](https://github.com/Niikelion/reactive-forge).

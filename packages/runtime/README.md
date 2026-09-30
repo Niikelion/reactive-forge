@@ -10,4 +10,4 @@ Core APIs: `validateComposition`, `renderComposition`, `exportToTsx`, `encodeAda
 
 Use composition version 4 for class values. Version 3 compositions without class values remain supported; older documents require the migration helpers.
 
-See [class adapter usage](https://github.com/Niikelion/reactive-forge/blob/master/docs/class-values-implementation-report.md).
+See [Reactive Forge](https://github.com/Niikelion/reactive-forge).
