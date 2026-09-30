@@ -3,9 +3,15 @@
   "version": "1.0.0",
   "license": "MIT",
   "type": "module",
-  "scripts": {
-    "lint": "eslint \"**/*.ts\"",
-    "build": "tsup && attw --pack ."
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "package.json"
+  ],
+  "bin": {
+    "forge": "./dist/bin.js"
   },
   "exports": {
     "import": {
@@ -17,37 +23,35 @@
       "require": "./dist/index.cjs"
     }
   },
-  "types": "./dist/index.d.ts",
-  "main": "./dist/index.cjs",
-  "bin": {
-    "forge": "./dist/bin.js"
-  },
-  "devDependencies": {
-    "@arethetypeswrong/cli": "^0.17.3",
-    "@reactive-forge/eslint-config": "0.1.0",
-    "@reactive-forge/typescript-config": "0.0.3",
-    "@types/node": ">=22.13.4",
-    "eslint": "^8",
-    "tsup": "^8.3.6"
+  "scripts": {
+    "lint": "eslint \"**/*.ts\"",
+    "build": "tsdown && attw --pack ."
   },
   "dependencies": {
     "@commander-js/extra-typings": "^13.1.0",
-    "@reactive-forge/shared": "1.0.0",
+    "@reactive-forge/schema": "1.0.0",
     "@types/prompts": "^2.4.9",
     "commander": "^13.1.0",
     "dedent": "^1.5.3",
+    "esbuild": "^0.28.2",
     "kleur": "^4.1.5",
     "load-config-ts": "^0.1.0",
     "prompts": "^2.4.2",
+    "semver": "^7.6.3",
     "ts-morph": ">=25.0.1",
     "ts-node": ">=10.9.2",
     "typescript": "5.5.4"
   },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.17.3",
+    "@gamedev-sensei/ts-config": "^2.0.1",
+    "@gamedev-sensei/tsdown-config": "^2.0.1",
+    "@reactive-forge/eslint-config": "0.1.0",
+    "@types/node": ">=22.13.4",
+    "@types/semver": "^7.5.8",
+    "eslint": "^9.14.0"
+  },
   "publishConfig": {
     "access": "public"
-  },
-  "files": [
-    "dist",
-    "package.json"
-  ]
+  }
 }

@@ -1,23 +1,41 @@
 {
   "name": "@reactive-forge/eslint-config",
   "version": "0.1.0",
-  "main": "index.mjs",
   "license": "MIT",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "/dist"
+  ],
+  "exports": {
+    "import": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "require": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsdown && attw --pack ."
+  },
   "dependencies": {
-    "eslint": "^8 || ^9",
     "@eslint/js": "^8 || ^9",
     "@typescript-eslint/eslint-plugin": "^7",
     "@typescript-eslint/parser": "^7",
+    "eslint": "^8 || ^9",
     "eslint-config-prettier": "^9",
-    "eslint-plugin-react-hooks": "^5",
+    "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0",
-    "globals": "^15"
+    "typescript-eslint": "^8.26.1"
   },
   "publishConfig": {
     "access": "public"
   },
-  "files": [
-    "index.mjs",
-    "package.json"
-  ]
+  "devDependencies": {
+    "@gamedev-sensei/ts-config": "^2.0.1",
+    "@gamedev-sensei/tsdown-config": "^2.0.1"
+  }
 }

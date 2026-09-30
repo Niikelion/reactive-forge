@@ -1,9 +1,0 @@
-{
-  "extends": "@reactive-forge/typescript-config/base.json",
-  "exclude": ["node_modules", "dist"],
-  "compilerOptions": {
-    "outDir": "dist",
-    "rootDir": "src",
-    "jsx": "react-jsx",
-  }
-}

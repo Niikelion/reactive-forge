@@ -9,8 +9,9 @@ import { version } from "../package.json"
 import dedent from "dedent"
 import path from "path"
 import fs from "fs/promises"
-import {createCodegen, fillConfig, ForgeConfig} from "./index"
-import {createLogger} from "./utils";
+import {createCodegen, fillConfig, ForgeConfig} from "./index.js"
+import {createLogger} from "./utils.js";
+import {bundleLibrary} from "./bundle.js";
 
 program.name("forge").version(version)
 
@@ -82,7 +83,18 @@ program
             }
         ])
 
-        const { usesWorkspaces: _, ...rest } = response
+        const { usesWorkspaces: _usesWorkspaces, ...rest } = response as {
+            usesWorkspaces: boolean
+            rootDir?: string
+            baseDir?: string
+            componentRoots?: string[]
+            tsConfigFilePath?: string
+            outDir?: string
+            pathPrefix?: string
+            typescriptLibPath?: string
+            reactTypesFilePath?: string
+        }
+        void _usesWorkspaces
 
         const config: ForgeConfig = rest
 
@@ -97,7 +109,7 @@ program
             type: "confirm",
             name: "shouldSave",
             message: "Do you want to save this config?"
-        })
+        }) as { shouldSave: boolean }
 
         if (!shouldSave) {
             console.info(config)
@@ -106,7 +118,7 @@ program
 
         const configContentPrefix = dedent`
             import type { ForgeConfig } from "@reactive-forge/codegen"
-            
+
             export default {
         `
 
@@ -159,12 +171,50 @@ program
         })
 
         if (config.path === undefined) {
-            logger.error(`Could not load config${options.config !== undefined ? ` at ${configFile}` : ""}`)
-            return
+            throw new Error(`Could not load config${options.config !== undefined ? ` at ${configFile}` : ""}`)
         }
 
-        await createCodegen(fillConfig(config.data), logger)
+        // Anchor config-relative paths (rootDir, baseDir, outDir, etc.) to the
+        // config file's own directory, not the process's current working
+        // directory, so the CLI behaves the same regardless of invocation cwd.
+        const configDir = path.dirname(config.path)
+
+        await createCodegen(fillConfig(config.data, configDir), logger)
+    })
+program
+    .command("bundle")
+    .description("Bundles an already-generated component registry as a standalone browser ESM module, with react/react-dom left external for the host to supply")
+    .option("--config <path>", "location to config file")
+    .option("-s, --silent", "Disables logging except errors", false)
+    .action(async (options) => {
+        const logger = createLogger({
+            silent: options.silent,
+            prefix: true
+        })
+        const { loadConfig } = await import("load-config-ts")
+
+        const configFile = options.config ?? "./forge.config.ts"
+        const config = await loadConfig<ForgeConfig>({
+            cwd: process.cwd(),
+            configKey: "forge",
+            configFile
+        })
+
+        if (config.path === undefined) {
+            throw new Error(`Could not load config${options.config !== undefined ? ` at ${configFile}` : ""}`)
+        }
+
+        // Same config-relative anchoring as "codegen" (see fillConfig): the
+        // bundle command reads the same forge.config.ts, so `outDir` must
+        // resolve identically regardless of invocation cwd.
+        const configDir = path.dirname(config.path)
+        const filled = fillConfig(config.data, configDir)
+
+        await bundleLibrary({ outDir: filled.outDir }, logger)
     })
 program.helpCommand(true)
 
-program.parseAsync().catch(console.error)
+program.parseAsync().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+})

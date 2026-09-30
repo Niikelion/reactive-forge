@@ -1,0 +1,52 @@
+<!doctype html>
+<!--
+  Independent host fixture (docs/claude-handoff.md gate C). This page is
+  deliberately NOT part of the yarn workspace's package graph - it imports
+  nothing from packages/, only:
+
+    - the standalone bundle produced by `forge bundle`
+      (../bundle-project/out/bundle.js), and
+    - the portable metadata document sitting next to it
+      (../bundle-project/out/metadata.json)
+
+  host.mjs also loads the `bundle.css` sibling and renders the "Branded"
+  component (real image + real @font-face font, both routed through
+  esbuild's "file" loader configured in bundleLibrary) alongside "Greeter",
+  proving the asset-loader path visually, not just at the JS-text level.
+
+  React/ReactDOM are supplied by the host, not the bundle (bundleLibrary in
+  packages/codegen/src/bundle.ts marks them `external`). This fixture
+  supplies them via an import map pointing at esm.sh CDN builds, one of the
+  two options the handoff explicitly allows ("via a CDN import map ... or a
+  locally vendored copy - your call, document it"); CDN was chosen so this
+  fixture needs no vendored copy checked into the repo and no local dev
+  server tooling beyond a plain static file server. `?external=react` tells
+  esm.sh to import its own "react" as a bare specifier instead of bundling a
+  second pinned copy, so the import map's single "react" entry is the only
+  React instance loaded - see tests/bundle.test.cjs for the duplicate-
+  instance check.
+
+  Servable as static files with no build step of its own: whatever already
+  produced ../bundle-project/out/{bundle.js,metadata.json} (via
+  `forge codegen` + `forge bundle`) is the only build step involved.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Reactive Forge independent host fixture</title>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@19.3.0",
+    "react/jsx-runtime": "https://esm.sh/react@19.3.0/jsx-runtime",
+    "react-dom": "https://esm.sh/react-dom@19.3.0?external=react",
+    "react-dom/client": "https://esm.sh/react-dom@19.3.0/client?external=react"
+  }
+}
+</script>
+</head>
+<body>
+<div id="root">not rendered yet</div>
+<script type="module" src="./host.mjs"></script>
+</body>
+</html>

@@ -1,9 +1,10 @@
 import colors from "kleur";
 
-export type LoggerConfig = {
+export interface LoggerConfig {
     silent?: boolean
     prefix?: boolean
 }
+
 
 const sparklesIcon = "✨ "
 const errorIcon = "❌ "

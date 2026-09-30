@@ -10,3 +10,12 @@ dist-ssr
 server/dist
 public/dist
 tsconfig.tsbuildinfo
+.yarn
+.idea
+.claude
+.codex
+tests/fixtures/cli-project/out
+tests/fixtures/editor-demo/out-demo
+tests/fixtures/editor-demo/demo.js
+tests/fixtures/editor-demo/demo.js.map
+docs/
