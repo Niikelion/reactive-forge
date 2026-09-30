@@ -31,6 +31,13 @@ for (const packageName of packages) {
   const manifestPath = resolve(root, 'packages', packageName.split('/').at(-1), 'package.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   const packageRoot = dirname(manifestPath);
+  if (packageName !== '@reactive-forge/eslint-config') {
+    check(manifest.peerDependencies?.react === '^19.0.0', `${packageName}: React must be a host-provided peer covering all 19.x releases`);
+    check(!manifest.dependencies?.react, `${packageName}: React must not be installed as a private dependency`);
+    check(manifest.peerDependencies?.['@types/react'] === '^19.0.0' && manifest.peerDependenciesMeta?.['@types/react']?.optional === true,
+      `${packageName}: React types must be an optional 19.x peer`);
+    check(require.resolve('react', { paths: [packageRoot] }) === require.resolve('react'), `${packageName}: must resolve the host React instance`);
+  }
   const entries = [manifest.main, manifest.module, manifest.types, ...declaredFiles(manifest.exports), ...Object.values(manifest.bin ?? {})]
     .filter((entry) => typeof entry === 'string');
 

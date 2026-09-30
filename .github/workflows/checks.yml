@@ -9,7 +9,12 @@ permissions:
 
 jobs:
   checks:
+    name: React ${{ matrix.react }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        react: ['19.0.0', '19']
     steps:
       - uses: actions/checkout@v6
         with:
@@ -19,6 +24,24 @@ jobs:
           node-version: 24
       - run: corepack enable
       - run: yarn install --immutable
+      - name: Select React compatibility version
+        env:
+          REACT_VERSION: ${{ matrix.react }}
+          YARN_ENABLE_IMMUTABLE_INSTALLS: false
+        run: |
+          node --input-type=commonjs <<'NODE'
+          const fs = require('node:fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          pkg.resolutions = {
+            ...pkg.resolutions,
+            react: process.env.REACT_VERSION,
+            'react-dom': process.env.REACT_VERSION,
+            '@types/react': process.env.REACT_VERSION
+          };
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          NODE
+          yarn install
+          node -e "console.log('Testing React', require('react').version)"
       - name: Require a Changeset for package changes
         if: github.event_name == 'pull_request'
         run: node tests/support/release-changeset.mjs

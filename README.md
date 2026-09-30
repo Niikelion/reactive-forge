@@ -11,6 +11,8 @@ Extract exported React components into portable prop metadata and a component re
 
 The coordinated 2.0.1 release is published; see [CHANGELOG.md](CHANGELOG.md). Package versions are separate from document schema versions.
 
+React is supplied by the host application. All stable React 19.x versions are supported (`^19.0.0`); TypeScript users supply matching React 19 types. CI verifies the React 19.0 baseline and the latest React 19.x release.
+
 ## Development
 
 Run yarn install, yarn build, yarn typecheck, yarn lint, yarn test:regressions and yarn check:packages.

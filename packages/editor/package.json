@@ -24,14 +24,14 @@
   },
   "dependencies": {
     "@reactive-forge/runtime": "2.0.1",
-    "@reactive-forge/schema": "2.0.1",
-    "react": "^19.1.0"
+    "@reactive-forge/schema": "2.0.1"
   },
   "devDependencies": {
     "@gamedev-sensei/ts-config": "^2.0.1",
     "@gamedev-sensei/tsdown-config": "^2.0.1",
     "@reactive-forge/eslint-config": "0.1.0",
-    "@types/react": "^19.1.8"
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -40,5 +40,14 @@
     "type": "git",
     "url": "git+https://github.com/Niikelion/reactive-forge.git",
     "directory": "packages/editor"
+  },
+  "peerDependencies": {
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@types/react": {
+      "optional": true
+    }
   }
 }
