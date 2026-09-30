@@ -51,6 +51,7 @@ import type {ComponentIdentity, ComponentLibraryData, ComponentMetadata, Metadat
 // hostProvidedPeers, so esbuild inlines its real source, proving it was truly bundled in, not
 // left as an unresolved import).
 import {Badge as ExternalBadge} from "rf-demo-widgets"
+import {NestedEditorDemo, createDemoInstance} from "./nested-demo"
 
 const METADATA_URL = "./out-demo/metadata.json"
 const BUNDLE_URL = "./out-demo/bundle.js"
@@ -85,9 +86,8 @@ function buildInitialDocument(slotCardId: string, slotIconId: string): Compositi
     }
 }
 
-// Flattens a declared-array per-entry prop's stored CompositionSlotItems back into a flat list for
-// display, mirroring exactly how packages/editor/src/slots.ts's own internal readSlotEntries reads
-// the "one entry = one node" case that insertSlotItem/moveSlotItem produce for this slot.
+// This legacy SlotCard example has exactly one rendered node per array entry.
+// The nested demo above it exercises independent entries with zero or multiple nodes.
 function flattenArrayEntries(items: { itemId: string, value: { kind: string, value?: { items: CompositionSlotItem[] } } }[]): CompositionSlotItem[] {
     return items.flatMap(entry => entry.value.kind === "nodes" && entry.value.value !== undefined ? entry.value.value.items : [])
 }
@@ -224,7 +224,13 @@ function SlotOutlet({
                         data-testid={`${testId}-insert-${component.name}`}
                         disabled={!result.ok}
                         title={result.ok ? undefined : result.diagnostics.map(d => d.message).join("; ")}
-                        onClick={() => { attemptInsert(newInstanceItem(component.id)) }}
+                        onClick={() => {
+                            const instance = createDemoInstance(component)
+                            if (instance === undefined) { setLastRejection("Configure required props before inserting this component."); return }
+                            const item = newInstanceItem(component.id)
+                            if (item.kind === "instance") item.instance = instance
+                            attemptInsert(item)
+                        }}
                     >
                         {result.ok ? `Insert ${component.name}` : `${component.name} (rejected)`}
                     </button>
@@ -373,8 +379,14 @@ function Editor({metadata, library}: LoadedLibrary) {
                 preview.setDocument(result.document)
                 return result.ok ? {ok: true} : {ok: false, reason: result.reason}
             },
-            onRemove: (itemId: string) => { preview.setDocument(removeSlotItem(preview.document, [], propName, itemId)) },
-            onMove: (from: number, to: number) => { preview.setDocument(moveSlotItem(preview.document, [], propName, from, to)) }
+            onRemove: (itemId: string) => {
+                const prop = preview.document.root.props[propName]
+                const entryId = prop?.kind === "composed" && prop.value.kind === "array"
+                    ? prop.value.items.find(entry => entry.value.kind === "nodes" && entry.value.value.items.some(item => item.itemId === itemId))?.itemId
+                    : itemId
+                if (entryId !== undefined) preview.setDocument(removeSlotItem(preview.document, metadata, library, [], propName, entryId).document)
+            },
+            onMove: (from: number, to: number) => { preview.setDocument(moveSlotItem(preview.document, metadata, library, [], propName, from, to).document) }
         }
     }
 
@@ -518,7 +530,7 @@ function App() {
     const {state, error} = useLoadedLibrary()
     if (error !== null) return <div data-testid="load-error">Failed to load demo library: {error.message}</div>
     if (state === null) return <div data-testid="loading">Loading component library…</div>
-    return <Editor metadata={state.metadata} library={state.library} />
+    return <><NestedEditorDemo metadata={state.metadata} library={state.library} /><Editor metadata={state.metadata} library={state.library} /></>
 }
 
 const container = document.getElementById("root")

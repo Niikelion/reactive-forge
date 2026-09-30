@@ -99,7 +99,7 @@ test('editor demo: forge codegen/bundle + build-editor-demo produce a self-conta
     // gets a real schemaVersion 2 metadata.json with SlotCard's real slot rules (see
     // demo.tsx's slot outlets: actions/icon/caption).
     assert.equal(metadata.schemaVersion, 2);
-    for (const name of ['SlotCard', 'SlotIcon']) {
+    for (const name of ['SlotCard', 'SlotIcon', 'NestedSlotCard']) {
       assert.ok(metadata.components.some((c) => c.name === name), `metadata.json describes ${name}, which demo.tsx depends on`);
     }
     const slotCard = metadata.components.find((c) => c.name === 'SlotCard');
@@ -149,7 +149,8 @@ test('editor demo: forge codegen/bundle + build-editor-demo produce a self-conta
     // fingerprints should appear inline), not left as unresolved bare
     // specifiers a browser could never load. ---
     assert.ok(!demoBundleText.includes('"@reactive-forge/editor"'), '@reactive-forge/editor must be bundled in, not a literal import specifier');
-    assert.ok(!demoBundleText.includes('"@reactive-forge/runtime"'), '@reactive-forge/runtime must be bundled in, not a literal import specifier');
+    // Adapter export descriptors legitimately contain module names as data.
+    assert.ok(!/(?:from\s*|import\s*\(?\s*|require\s*\(\s*)["']@reactive-forge\/runtime["']/.test(demoBundleText), '@reactive-forge/runtime must be bundled in, not an unresolved import');
     assert.ok(!demoBundleText.includes('"@reactive-forge/schema"'), '@reactive-forge/schema must be bundled in, not a literal import specifier');
     // A fingerprint of real bundled-in editor/runtime logic (not something a
     // trivial "does the file exist" check could pass by accident).
@@ -166,6 +167,8 @@ test('editor demo: forge codegen/bundle + build-editor-demo produce a self-conta
     // resolved and bundled, not left dangling.
     assert.ok(demoBundleText.includes('external-badge'), 'the real rf-demo-widgets Badge implementation (data-testid="external-badge") is bundled into demo.js');
     assert.ok(demoBundleText.includes('exportToTsx'), 'the real exportToTsx implementation is bundled into demo.js, backing the Export to TSX button');
+    assert.ok(demoBundleText.includes('CompositionEditor'), 'the reusable editor is included for the real nested demo');
+    assert.ok(demoBundleText.includes('nested-editor-demo'), 'the nested demo is mounted by the browser application');
 
     // --- Every import statement left in the bundled ESM output must be one
     // of the declared host-provided peers - nothing else. This also proves
@@ -357,6 +360,24 @@ test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + 
     const { createElement } = require('react');
     const exportedHtml = renderToStaticMarkup(createElement(exportedComponent, { callbacks: {} }));
     assert.equal(exportedHtml, projectOnlyRuntimeHtml, 'the exported TSX (project components only) renders byte-identical HTML to @reactive-forge/runtime\'s renderComposition for the same document');
+
+    // Exercise the exact nested document mounted by the demo, including two nodes in one
+    // declared array entry and an independent empty entry. A JSON round-trip preserves both
+    // entry IDs and inner node IDs before TSX compilation/render equivalence is checked.
+    const { buildNestedDocument } = require(path.join(fixtureDir, 'nested-demo.tsx'));
+    const nestedDocument = buildNestedDocument(byName('NestedSlotCard').id);
+    const nestedRoundTrip = JSON.parse(JSON.stringify(nestedDocument));
+    assert.deepEqual(nestedRoundTrip, nestedDocument);
+    assert.equal(validateComposition(nestedRoundTrip, metadata, registry).valid, true);
+    assert.equal(nestedRoundTrip.root.props.actions.value.items[0].value.value.items.length, 2);
+    assert.equal(nestedRoundTrip.root.props.actions.value.items[1].value.value.items.length, 0);
+    const nestedRuntimeHtml = renderToStaticMarkup(renderComposition(nestedRoundTrip, metadata, registry));
+    const nestedExportPath = path.join(scratchDir, 'NestedExport.tsx');
+    fs.writeFileSync(nestedExportPath, exportToTsx(nestedRoundTrip, metadata, registry, { resolveImportPath }), 'utf8');
+    assert.equal(compileTsx(scratchDir, [nestedExportPath]), null, 'nested demo TSX typechecks');
+    const NestedExport = require(nestedExportPath).default;
+    assert.equal(renderToStaticMarkup(createElement(NestedExport, { callbacks: {} })), nestedRuntimeHtml,
+      'nested demo save/reload/export preserves runtime output without editor outlets');
   } finally {
     cleanGenerated();
   }

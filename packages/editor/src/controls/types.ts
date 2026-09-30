@@ -23,6 +23,7 @@ export type ControlPropValue = CompositionPropValue
  * `registry.ts`'s `defaultControls` for which ones do and why).
  */
 export type SchemaTypeTag =
+    | "instance"
     | "string" | "number" | "boolean" | "bigint" | "date"
     | "array" | "object" | "union" | "reactNode" | "function"
     | "null" | "undefined" | "void" | "never" | "unknown"

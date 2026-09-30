@@ -1,5 +1,5 @@
 import {createElement, useState} from "react"
-import {exampleValue, schemaFromJson, SchemaJson} from "@reactive-forge/schema"
+import {exampleValue, fromValueJson, schemaFromJson, SchemaJson} from "@reactive-forge/schema"
 import {ControlComponent} from "./types.js"
 import {pickControl} from "./registry.js"
 
@@ -26,15 +26,19 @@ export const UnionControl: ControlComponent = (props) => {
     const currentLeafType = currentValue?.kind === "composed" && currentValue.value.kind === "leaf"
         ? currentValue.value.value.type
         : undefined
-    const currentTag = currentLeafType ?? (currentValue?.kind === "callback" ? "function" : undefined)
-    const [selected, setSelected] = useState<string>(currentTag ?? members[0]?.type ?? "unknown")
+    const matches = (member: SchemaJson): boolean => {
+        if (currentValue?.kind === "callback") return member.type === "function"
+        if (currentValue?.kind !== "composed" || currentValue.value.kind !== "leaf") return false
+        try { fromValueJson(schemaFromJson(member), currentValue.value.value); return true } catch { return false }
+    }
+    const [selected, setSelected] = useState<string>(() => String(Math.max(0, members.findIndex(matches))))
 
-    const activeMember = members.find(m => m.type === selected) ?? members[0]
+    const activeMember = members[Number(selected)] ?? members[0]
     if (activeMember === undefined) return createElement("span", {}, "(empty union)")
 
     const Sub = pickControl(activeMember.type, editorHints, controls)
     const nestedCurrent =
-        (currentLeafType === activeMember.type) ||
+        (currentLeafType === activeMember.type && matches(activeMember)) ||
         (currentValue?.kind === "callback" && activeMember.type === "function")
             ? currentValue
             : undefined
@@ -48,9 +52,9 @@ export const UnionControl: ControlComponent = (props) => {
             "data-role": "union-variant",
             value: selected,
             onChange: (event: {target: {value: string}}) => { setSelected(event.target.value) }
-        }, members.map(member => createElement("option", {key: member.type, value: member.type}, member.type))),
+        }, members.map((member, index) => createElement("option", {key: index, value: String(index)}, member.type === "instance" ? JSON.stringify(member["typeRef"]) : member.type))),
         createElement(Sub, {
-            key: "value",
+            key: selected,
             schema: activeMember,
             currentValue: nestedCurrent,
             exampleValue: example,

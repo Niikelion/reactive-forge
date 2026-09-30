@@ -12,17 +12,12 @@ import {
     SlotCheckResult,
     SlotItemCandidate
 } from "@reactive-forge/schema"
-import {CompositionArrayItem, CompositionDocument, CompositionInstance, CompositionPropValue, CompositionSlotItem, resolvePropSlotRules} from "@reactive-forge/runtime"
-import {getInstanceAtPath, updateInstanceAtPath, ValuePath} from "./preview.js"
+import {CompositionArrayItem, CompositionDocument, CompositionInstance, CompositionSlotItem, CompositionValue, CallbackRegistry, validateComposition, resolvePropSlotRules} from "@reactive-forge/runtime"
+import {getInstanceAtPath, updateInstanceAtPath, updateValueAtPath, ValuePath} from "./preview.js"
 
-// Slot outlets and operations, phase 3 (docs/slot-contract.md section 8: "One shared
-// policy resolver/validator must serve palette filtering, drop acceptance, paste/
-// insertion, document loading, rendering, and export preflight"). Every function here
-// that decides whether something is allowed calls `checkSlotValue`/`resolveSlotPolicy`
-// - the SAME functions `packages/runtime/src/validate.ts` already uses to validate a
-// whole document - never a parallel ad-hoc check. This module only adds: candidate
-// enumeration (the palette/picker lists), id generation for new items, and the
-// insert/remove/reorder array operations themselves.
+// Every document operation validates the complete candidate through the runtime
+// validator before returning success. ValuePath preserves nested object/array
+// boundaries and uses stable IDs when resolving an entry after a reorder.
 
 // ---------------------------------------------------------------------------------------------
 // id generation - new editor-created instances/items need their own opaque, stable
@@ -146,150 +141,130 @@ function describeRejection(result: {ok: false, diagnostics: {message: string}[]}
     return result.diagnostics.map(d => d.message).join("; ") || "Rejected by slot policy."
 }
 
-// ---------------------------------------------------------------------------------------------
-// A DECLARED ARRAY prop with an each() per-entry slot policy (e.g. `actions: ReactNode[]`,
-// worked example 8.3) is represented at v3's top level as `{kind:"array", items:
-// CompositionArrayItem[]}`, NOT a flat `"nodes"` value - each declared array entry is
-// independently `{kind:"nodes", value:{items: CompositionSlotItem[]}}`, and (per 8.3) a single
-// entry MAY hold more than one rendered node. This module's simple insert/remove/move CRUD
-// surface only ever operates one `CompositionSlotItem` at a time, so it deliberately keeps to
-// the common "one declared entry = exactly one rendered node" case: each entry's own `itemId`
-// is set equal to its single inner slot item's `itemId` (two independent id concepts per section
-// 4, degenerately equal here - a caller that needs a genuine multi-node entry uses
-// `updateValueAtPath` directly, as tests/editor.test.cjs's nested-addressing tests do). A
-// bare-ReactNode prop (no each() rule - e.g. `header: ReactNode`) stays the flat `"nodes"` shape,
-// exactly as before. Which shape to read is taken from whatever is ALREADY stored (so these
-// functions never need a `MetadataDocument` beyond `insertSlotItem`, which already has one for
-// policy checking); which shape to WRITE for a brand-new/absent prop falls back to
-// `rules.perEntry`.
-// ---------------------------------------------------------------------------------------------
-type SlotShape = "array" | "nodes"
-
-function currentSlotShape(prop: CompositionPropValue | undefined): SlotShape | undefined {
-    if (prop?.kind !== "composed") return undefined
-    if (prop.value.kind === "array") return "array"
-    if (prop.value.kind === "nodes") return "nodes"
-    return undefined
+/** Validate the complete candidate, including ancestor collection limits and required props. */
+function commitDocument(document: CompositionDocument, candidate: CompositionDocument,
+    metadata: MetadataDocument, library: ComponentLibraryData, callbacks?: CallbackRegistry): SlotOperationResult {
+    const result = validateComposition(candidate, metadata, library, callbacks)
+    if (!result.valid) return {ok: false, document, reason: describeRejection({ok: false, diagnostics: result.diagnostics}), diagnostics: result.diagnostics}
+    return {ok: true, document: candidate}
 }
 
-function readSlotEntries(prop: CompositionPropValue | undefined, shape: SlotShape): CompositionSlotItem[] {
-    if (prop?.kind !== "composed") return []
-    if (shape === "array") {
-        if (prop.value.kind !== "array") return []
-        return prop.value.items.flatMap(entry => entry.value.kind === "nodes" ? entry.value.value.items : [])
-    }
-    if (prop.value.kind !== "nodes") return []
-    return prop.value.value.items
+function rejection(document: CompositionDocument, error: unknown): SlotOperationResult {
+    return {ok: false, document, reason: error instanceof Error ? error.message : String(error), diagnostics: []}
 }
 
-function writeSlotEntries(items: CompositionSlotItem[], shape: SlotShape): CompositionPropValue {
-    if (shape === "array") {
-        const arrayItems: CompositionArrayItem[] = items.map(item => (
-            {itemId: item.itemId, value: {kind: "nodes", value: {items: [item]}}}
-        ))
-        return {kind: "composed", value: {kind: "array", items: arrayItems}}
-    }
-    return {kind: "composed", value: {kind: "nodes", value: {items}}}
+/** Transactional edit at an arbitrary nested value. Invalid edits return the original document. */
+export function editValue(document: CompositionDocument, metadata: MetadataDocument,
+    library: ComponentLibraryData, path: ValuePath,
+    rewrite: (value: CompositionValue) => CompositionValue, callbacks?: CallbackRegistry): SlotOperationResult {
+    try {
+        const candidate = {...document, root: updateValueAtPath(document.root, path, rewrite)}
+        return commitDocument(document, candidate, metadata, library, callbacks)
+    } catch (error) { return rejection(document, error) }
 }
 
-/**
- * Inserts `item` into the `"nodes"` slot `propName` on the instance at `path`, at
- * `insertAtIndex`. Checked via `checkSlotValue` against the SAME resolved policy
- * `computeInsertablePalette`/`validateComposition` use, before the document is touched at
- * all - a rejected candidate never mutates `document` (the returned `document` is `===`
- * the input on rejection) and carries a human-readable `reason` plus the raw diagnostics.
- */
-export function insertSlotItem(
-    document: CompositionDocument,
-    metadata: MetadataDocument,
-    library: ComponentLibraryData,
-    path: ValuePath,
-    propName: string,
-    insertAtIndex: number,
-    item: CompositionSlotItem
-): SlotOperationResult {
-    const host = getInstanceAtPath(document, path)
-    const hostComponent = findHostComponent(metadata, host.componentId)
-    const prop = host.props[propName]
+function insertionIndex(index: number, length: number): void {
+    if (!Number.isInteger(index) || index < 0 || index > length) throw new Error("Insertion index is outside the collection")
+}
 
-    const rules = resolvePropSlotRules(hostComponent, propName)
-    if (rules.itemRule?.slot === undefined)
-        return {ok: false, document, reason: `"${propName}" is not a nodes-kind slot on "${hostComponent.name}"`, diagnostics: []}
+export function insertAtValuePath(document: CompositionDocument, metadata: MetadataDocument,
+    library: ComponentLibraryData, path: ValuePath, index: number,
+    item: CompositionSlotItem, callbacks?: CallbackRegistry): SlotOperationResult {
+    return editValue(document, metadata, library, path, value => {
+        if (value.kind !== "nodes") throw new Error("Insertion requires a nodes value")
+        insertionIndex(index, value.value.items.length)
+        const items = value.value.items.slice()
+        items.splice(index, 0, item)
+        return {...value, value: {...value.value, items}}
+    }, callbacks)
+}
 
-    const shape: SlotShape = currentSlotShape(prop) ?? (rules.perEntry ? "array" : "nodes")
-    const currentItems: CompositionSlotItem[] = readSlotEntries(prop, shape)
+export function insertArrayEntryAtPath(document: CompositionDocument, metadata: MetadataDocument,
+    library: ComponentLibraryData, path: ValuePath, index: number,
+    entry: CompositionArrayItem, callbacks?: CallbackRegistry): SlotOperationResult {
+    return editValue(document, metadata, library, path, value => {
+        if (value.kind !== "array") throw new Error("Entry insertion requires an array value")
+        insertionIndex(index, value.items.length)
+        const items = value.items.slice()
+        items.splice(index, 0, entry)
+        return {...value, items}
+    }, callbacks)
+}
 
-    if (rules.collection?.maxItems !== undefined && currentItems.length + 1 > rules.collection.maxItems) {
-        return {
-            ok: false,
-            document,
-            reason: `"${propName}" already holds ${String(currentItems.length)} entries; collection maxItems is ${String(rules.collection.maxItems)}`,
-            diagnostics: []
+export function removeAtValuePath(document: CompositionDocument, metadata: MetadataDocument,
+    library: ComponentLibraryData, path: ValuePath, itemId: string,
+    callbacks?: CallbackRegistry): SlotOperationResult {
+    return editValue(document, metadata, library, path, value => {
+        if (value.kind === "array") {
+            if (!value.items.some(item => item.itemId === itemId)) throw new Error(`No array entry "${itemId}"`)
+            return {...value, items: value.items.filter(item => item.itemId !== itemId)}
         }
-    }
-
-    const candidate: SlotItemCandidate = item
-    const context = slotCheckContextFor(currentItems, insertAtIndex, rules.perEntry, library, metadata)
-    const result = checkSlotValue(rules.itemRule, candidate, context)
-    if (!result.ok) return {ok: false, document, reason: describeRejection(result), diagnostics: result.diagnostics}
-
-    const nextItems = currentItems.slice()
-    nextItems.splice(insertAtIndex, 0, item)
-    const nextDocument = updateInstanceAtPath(document, path, instance => ({
-        ...instance,
-        props: {...instance.props, [propName]: writeSlotEntries(nextItems, shape)}
-    }))
-    return {ok: true, document: nextDocument}
+        if (value.kind !== "nodes") throw new Error("Removal requires a nodes or array value")
+        if (!value.value.items.some(item => item.itemId === itemId)) throw new Error(`No slot item "${itemId}"`)
+        return {...value, value: {...value.value, items: value.value.items.filter(item => item.itemId !== itemId)}}
+    }, callbacks)
 }
 
-/** Removes the item with `itemId` from the `"nodes"` slot `propName`. A no-op (same document) if not found. */
-export function removeSlotItem(
-    document: CompositionDocument,
-    path: ValuePath,
-    propName: string,
-    itemId: string
-): CompositionDocument {
-    const host = getInstanceAtPath(document, path)
-    const shape = currentSlotShape(host.props[propName])
-    if (shape === undefined) return document
-    const items = readSlotEntries(host.props[propName], shape)
-    const nextItems = items.filter(i => i.itemId !== itemId)
-    if (nextItems.length === items.length) return document
-    return updateInstanceAtPath(document, path, instance => ({
-        ...instance,
-        props: {...instance.props, [propName]: writeSlotEntries(nextItems, shape)}
-    }))
+function reorder<T>(items: T[], from: number, to: number): T[] {
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 || from >= items.length || to >= items.length)
+        throw new Error("Move index is outside the collection")
+    const next = items.slice()
+    const moved = next.splice(from, 1)[0]
+    if (moved === undefined) throw new Error("No item at move index")
+    next.splice(to, 0, moved)
+    return next
 }
 
-/**
- * Reorders the `"nodes"` slot `propName`: moves the item currently at `fromIndex` to
- * `toIndex` (array splice). Every item's `itemId` (and, for an `"instance"` item, that
- * instance's own `instanceId`) is carried along unchanged - reordering never touches
- * identity, only position, which is the entire point of id-based addressing (`InstancePath`
- * steps re-resolve by `itemId`, so any path into a *moved* item's own subtree stays valid
- * across the move).
- */
-export function moveSlotItem(
-    document: CompositionDocument,
-    path: ValuePath,
-    propName: string,
-    fromIndex: number,
-    toIndex: number
-): CompositionDocument {
-    const host = getInstanceAtPath(document, path)
-    const shape = currentSlotShape(host.props[propName])
-    if (shape === undefined) return document
-    const items = readSlotEntries(host.props[propName], shape)
-    if (fromIndex < 0 || fromIndex >= items.length || toIndex < 0 || toIndex >= items.length || fromIndex === toIndex)
-        return document
-    const nextItems = items.slice()
-    const [moved] = nextItems.splice(fromIndex, 1)
-    if (moved === undefined) return document
-    nextItems.splice(toIndex, 0, moved)
-    return updateInstanceAtPath(document, path, instance => ({
-        ...instance,
-        props: {...instance.props, [propName]: writeSlotEntries(nextItems, shape)}
-    }))
+export function moveAtValuePath(document: CompositionDocument, metadata: MetadataDocument,
+    library: ComponentLibraryData, path: ValuePath, from: number, to: number,
+    callbacks?: CallbackRegistry): SlotOperationResult {
+    return editValue(document, metadata, library, path, value => {
+        if (value.kind === "array") return {...value, items: reorder(value.items, from, to)}
+        if (value.kind !== "nodes") throw new Error("Move requires a nodes or array value")
+        return {...value, value: {...value.value, items: reorder(value.value.items, from, to)}}
+    }, callbacks)
+}
+
+/** Compatibility convenience for top-level props. Array entries remain separate containers. */
+export function insertSlotItem(document: CompositionDocument, metadata: MetadataDocument,
+    library: ComponentLibraryData, path: ValuePath, propName: string, index: number,
+    item: CompositionSlotItem, callbacks?: CallbackRegistry): SlotOperationResult {
+    try {
+        const host = getInstanceAtPath(document, path)
+        const rules = resolvePropSlotRules(findHostComponent(metadata, host.componentId), propName)
+        const prop = host.props[propName]
+        if (prop !== undefined && prop.kind !== "composed") throw new Error("Target prop is not a composed value")
+        const value = prop?.value ?? (rules.perEntry ? {kind: "array" as const, items: []} : {kind: "nodes" as const, value: {items: []}})
+        const current = value.kind === "array" ? value.items : value.kind === "nodes" ? value.value.items : undefined
+        if (!current) throw new Error("Insertion requires a nodes or array value")
+        insertionIndex(index, current.length)
+        let next: CompositionValue
+        if (value.kind === "array") {
+            const items = value.items.slice()
+            items.splice(index, 0, {itemId: generateId("entry"), value: {kind: "nodes", value: {items: [item]}}})
+            next = {...value, items}
+        } else if (value.kind === "nodes") {
+            const items = value.value.items.slice()
+            items.splice(index, 0, item)
+            next = {...value, value: {...value.value, items}}
+        } else throw new Error("Insertion requires a nodes or array value")
+        const candidate = updateInstanceAtPath(document, path, instance => ({...instance,
+            props: {...instance.props, [propName]: {kind: "composed", value: next}}}))
+        return commitDocument(document, candidate, metadata, library, callbacks)
+    } catch (error) { return rejection(document, error) }
+}
+
+/** Array removal targets the array entry ID, never an inner slot item's ID. */
+export function removeSlotItem(document: CompositionDocument, metadata: MetadataDocument,
+    library: ComponentLibraryData, path: ValuePath, propName: string, itemId: string,
+    callbacks?: CallbackRegistry): SlotOperationResult {
+    return removeAtValuePath(document, metadata, library, [...path, {kind: "prop", propName}], itemId, callbacks)
+}
+
+export function moveSlotItem(document: CompositionDocument, metadata: MetadataDocument,
+    library: ComponentLibraryData, path: ValuePath, propName: string, from: number, to: number,
+    callbacks?: CallbackRegistry): SlotOperationResult {
+    return moveAtValuePath(document, metadata, library, [...path, {kind: "prop", propName}], from, to, callbacks)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -359,19 +334,17 @@ export function setRichTextProp(
     library: ComponentLibraryData,
     path: ValuePath,
     propName: string,
-    value: RichTextValueJson
+    value: RichTextValueJson,
+    callbacks?: CallbackRegistry
 ): SlotOperationResult {
     const host = getInstanceAtPath(document, path)
     const hostComponent = findHostComponent(metadata, host.componentId)
     const result = checkRichTextValue(hostComponent, propName, library, value)
     if (!result.ok) return {ok: false, document, reason: describeRejection(result), diagnostics: result.diagnostics}
-    return {
-        ok: true,
-        document: updateInstanceAtPath(document, path, instance => ({
+    return commitDocument(document, updateInstanceAtPath(document, path, instance => ({
             ...instance,
             props: {...instance.props, [propName]: {kind: "composed", value: {kind: "richText", value}}}
-        }))
-    }
+        })), metadata, library, callbacks)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -407,7 +380,8 @@ export function setComponentRefProp(
     library: ComponentLibraryData,
     path: ValuePath,
     propName: string,
-    identity: ComponentIdentity
+    identity: ComponentIdentity,
+    callbacks?: CallbackRegistry
 ): SlotOperationResult {
     const host = getInstanceAtPath(document, path)
     const hostComponent = findHostComponent(metadata, host.componentId)
@@ -416,13 +390,10 @@ export function setComponentRefProp(
         return {ok: false, document, reason: `"${propName}" does not resolve to a componentRef policy`, diagnostics: []}
     const result = checkSlotValue(rules.itemRule, identity, {library, currentItemCount: 0, currentNonVoidCount: 0})
     if (!result.ok) return {ok: false, document, reason: describeRejection(result), diagnostics: result.diagnostics}
-    return {
-        ok: true,
-        document: updateInstanceAtPath(document, path, instance => ({
+    return commitDocument(document, updateInstanceAtPath(document, path, instance => ({
             ...instance,
             props: {...instance.props, [propName]: {kind: "composed", value: {kind: "componentRef", value: identity}}}
-        }))
-    }
+        })), metadata, library, callbacks)
 }
 
 /** Convenience re-export so a consumer only needs one import for library lookups alongside these operations. */

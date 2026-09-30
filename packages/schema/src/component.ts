@@ -17,6 +17,7 @@ export interface ComponentFileData {
 }
 
 export interface ComponentLibraryData {
+    valueAdapters?: import("./schema/Instance").ValueAdapterRegistry
     files: ComponentFileData[]
 }
 

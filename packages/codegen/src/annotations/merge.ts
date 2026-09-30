@@ -43,14 +43,30 @@ function conflictDiagnostic(field: string, first: AuthoredRule, second: Authored
 
 // Folds every same-layer rule targeting one canonical path, in source-scan order, applying
 // "first rule to set a field wins" (section 4, "Same-layer conflicts").
-function foldLayer(rules: AuthoredRule[]): { collection?: SlotRule["collection"], slot?: SlotPolicy, diagnostics: Diagnostic[] } {
+function foldLayer(rules: AuthoredRule[]): { collection?: SlotRule["collection"], slot?: SlotPolicy, editor?: SlotRule["editor"], diagnostics: Diagnostic[] } {
     let collection: SlotRule["collection"]
     let collectionSetBy: AuthoredRule | undefined
     let slot: SlotPolicy | undefined
     let slotSetBy: AuthoredRule | undefined
     const diagnostics: Diagnostic[] = []
+    let editor: SlotRule["editor"]
+    const editorSetBy: Partial<Record<keyof NonNullable<SlotRule["editor"]>, AuthoredRule>> = {}
 
     for (const authored of rules) {
+        if (authored.rule.editor !== undefined) {
+            editor ??= {}
+            for (const field of ["visibility", "group", "label"] as const) {
+                const value = authored.rule.editor[field]
+                if (value === undefined) continue
+                const first = editorSetBy[field]
+                if (first === undefined) {
+                    editor = { ...editor, [field]: value }
+                    editorSetBy[field] = authored
+                } else if (editor[field] !== value) {
+                    diagnostics.push(conflictDiagnostic(`editor.${field}`, first, authored))
+                }
+            }
+        }
         const incomingCollection = authored.rule.collection
         if (incomingCollection !== undefined) {
             if (collection === undefined) {
@@ -93,7 +109,7 @@ function foldLayer(rules: AuthoredRule[]): { collection?: SlotRule["collection"]
         }
     }
 
-    return { collection, slot, diagnostics }
+    return { collection, slot, editor, diagnostics }
 }
 
 export interface MergeResult {
@@ -128,7 +144,7 @@ export function mergeAuthoredRules(rules: AuthoredRule[]): Map<string, MergeResu
             if (layerRules.length === 0) continue
             const folded = foldLayer(layerRules)
             diagnostics.push(...folded.diagnostics)
-            effective = mergeRule(effective, { path, collection: folded.collection, slot: folded.slot }, layer)
+            effective = mergeRule(effective, { path, collection: folded.collection, slot: folded.slot, editor: folded.editor }, layer)
         }
 
         if (effective === undefined) continue

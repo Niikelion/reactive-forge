@@ -41,6 +41,7 @@ export type FunctionConstruct = Construct<"function", {
 }>
 
 export type ValueConstruct =
+    | {type: "instance", adapterId: string, version: number, value: ValueConstruct}
     | VoidConstruct
     | NullConstruct
     | UndefinedConstruct
@@ -75,6 +76,7 @@ export const constructSchema = {
         args: z.record(z.lazy((): ZodType<ValueConstruct> => constructSchema.value))
     })),
     value: z.lazy((): ZodType<ValueConstruct> => z.union([
+        z.object({type: z.literal("instance"), adapterId: z.string(), version: z.number().int().positive(), value: z.lazy((): ZodType<ValueConstruct> => constructSchema.value)}),
         constructSchema.null,
         constructSchema.undefined,
         constructSchema.boolean,

@@ -296,6 +296,43 @@ function parseCollection(node: Node, diagnostics: Diagnostic[]): { minItems?: nu
 
 // --- top-level: one SlotRule object literal ---------------------------------
 
+function parseEditor(node: Node, diagnostics: Diagnostic[]): SlotRule["editor"] {
+    if (!Node.isObjectLiteralExpression(node)) {
+        diagnostics.push(unsupported(node, "editor is not an object literal"))
+        return undefined
+    }
+    const editor: NonNullable<SlotRule["editor"]> = {}
+    const seen = new Set<string>()
+    for (const property of node.getProperties()) {
+        if (!Node.isPropertyAssignment(property) || Node.isComputedPropertyName(property.getNameNode())) {
+            diagnostics.push(unsupported(property, "editor fields must be static property assignments"))
+            return undefined
+        }
+        const nameNode = property.getNameNode()
+        const key = Node.isStringLiteral(nameNode) ? nameNode.getLiteralValue() : property.getName()
+        if (!["visibility", "group", "label"].includes(key) || seen.has(key)) {
+            diagnostics.push(unsupported(property, "unknown or duplicate editor field"))
+            return undefined
+        }
+        seen.add(key)
+        const initializer = property.getInitializer()
+        const value = initializer ? readStringLiteral(initializer) : undefined
+        if (value === undefined) {
+            diagnostics.push(unsupported(property, "editor fields must be literal strings"))
+            return undefined
+        }
+        if (key === "visibility") {
+            if (value !== "primary" && value !== "advanced" && value !== "hidden" && value !== "auto") {
+                diagnostics.push(unsupported(property, "unknown editor visibility"))
+                return undefined
+            }
+            editor.visibility = value
+        } else if (key === "group") editor.group = value
+        else editor.label = value
+    }
+    return editor
+}
+
 function parseSlotRule(node: Node, context: IdentityResolutionContext, diagnostics: Diagnostic[]): SlotRule | undefined {
     if (!Node.isObjectLiteralExpression(node)) {
         diagnostics.push(unsupported(node, "rule is not an object literal"))
@@ -323,7 +360,24 @@ function parseSlotRule(node: Node, context: IdentityResolutionContext, diagnosti
         if (slot === undefined) return undefined
     }
 
-    return { path, ...(collection !== undefined ? { collection } : {}), ...(slot !== undefined ? { slot } : {}) }
+    let editor: SlotRule["editor"]
+    const editorProperty = node.getProperty("editor")
+    if (editorProperty) {
+        const editorNode = findProperty(node, "editor")
+        if (!editorNode) {
+            diagnostics.push(unsupported(editorProperty, "editor must be a static object literal"))
+            return undefined
+        }
+        if (path.length === 0) {
+            diagnostics.push(unsupported(editorNode, "editor paths must target a prop, not the component root"))
+            return undefined
+        }
+        editor = parseEditor(editorNode, diagnostics)
+        if (editor === undefined) return undefined
+    }
+
+    return { path, ...(collection !== undefined ? { collection } : {}), ...(slot !== undefined ? { slot } : {}),
+        ...(editor !== undefined ? { editor } : {}) }
 }
 
 export interface ParsedDefineComponentMetadataCall {

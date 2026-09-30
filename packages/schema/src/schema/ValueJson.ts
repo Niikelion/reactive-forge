@@ -10,6 +10,7 @@ import {c} from "@/schema/constructUtils";
 // Mirrors docs/metadata-contract.md's `ValueJson` shape exactly; keep both in sync if either
 // changes.
 export type ValueJson =
+    | {type: "instance", adapterId: string, version: number, value: ValueJson}
     | { type: "void" | "null" | "undefined" }
     | { type: "boolean", value: boolean }
     | { type: "number", value: number }
@@ -25,6 +26,7 @@ export type ValueJson =
 export type DefaultValueJson = ValueJson
 
 export const ValueJson: ZodType<ValueJson> = z.lazy(() => z.union([
+    z.object({type: z.literal("instance"), adapterId: z.string().min(1), version: z.number().int().positive(), value: ValueJson}),
     z.object({type: z.union([z.literal("void"), z.literal("null"), z.literal("undefined")])}),
     z.object({type: z.literal("boolean"), value: z.boolean()}),
     z.object({type: z.literal("number"), value: z.number()}),
@@ -58,6 +60,7 @@ export class FunctionConstructNotSerializableError extends Error {
  */
 export function toValueJson(construct: ValueConstruct): ValueJson {
     switch (construct.type) {
+        case "instance": return {...construct, value: toValueJson(construct.value)}
         case "void":
         case "null":
         case "undefined":
@@ -92,6 +95,7 @@ export function toValueJson(construct: ValueConstruct): ValueJson {
 
 function valueConstructFromJson(json: ValueJson): ValueConstruct {
     switch (json.type) {
+        case "instance": return {...json, value: valueConstructFromJson(json.value)}
         case "void": return c.void()
         case "null": return c.null()
         case "undefined": return c.undefined()
@@ -127,6 +131,7 @@ export function fromValueJson(schema: Schema, json: ValueJson): ValueConstruct {
  */
 export function exampleValue(schema: Schema): ValueJson | undefined {
     try {
+        if (schema.name === "instance" && !schema.verifyConstructType(schema.exampleConstruct)) return undefined
         return toValueJson(schema.exampleConstruct)
     } catch (e) {
         if (e instanceof FunctionConstructNotSerializableError) return undefined

@@ -17,6 +17,7 @@ export function buildProps(component: ComponentData): Record<string, PropMetadat
         props[propName] = {
             schema: propSchema.schema.toJson(),
             required: propSchema.required,
+            ...(meta?.provenance !== undefined ? { provenance: meta.provenance } : {}),
             ...(meta?.description !== undefined ? { description: meta.description } : {}),
             ...(meta?.defaultValue !== undefined ? { defaultValue: meta.defaultValue } : {}),
             ...(example !== undefined ? { exampleValue: example } : {}),

@@ -17,6 +17,9 @@ import {
     VariableDeclaration
 } from "ts-morph"
 import {ComponentData, PropExtra} from "./types.js"
+import {extractPropProvenance} from "./propProvenance.js"
+import {ClassExtractionOptions, classReference, resolveClassBindings} from "./classBindings.js"
+import {InstanceSchema, schemaFromJson} from "@reactive-forge/schema"
 import {Diagnostic, ValueJson} from "./metadataTypes.js"
 import {
     ArraySchema,
@@ -69,8 +72,11 @@ interface PropSink {
     onProperty(name: string, declaration: Node | undefined, diagnostics: Diagnostic[]): void
 }
 
-function createUtils(project: Project, sourceDirectory: string)
+function createUtils(project: Project, sourceDirectory: string, classOptions: ClassExtractionOptions = {})
 {
+    const classRoot = path.resolve(classOptions.rootDir ?? process.cwd())
+    const classBindings = resolveClassBindings(project, classRoot, classOptions.classBindings ?? [])
+    const activeTypes = new Set<ts.Type>()
     const source = `
         import {FC, ReactNode, JSX} from "react"
         export type ComponentReturnType = ReturnType<FC> | JSX.Element
@@ -362,7 +368,12 @@ function createUtils(project: Project, sourceDirectory: string)
             undefined
         )
 
-        for (const { name, declaration, diagnostics } of collectedProps) {
+        // Intersections may have been flattened without the top-level sink.
+        // Visit the resolved public properties so provenance/defaults survive that path too.
+        for (const name of Object.keys(paramsSchema.properties)) {
+            const collected = collectedProps.find(prop => prop.name === name)
+            const declaration = collected?.declaration ?? type.getProperty(name)?.getDeclarations()[0]
+            const diagnostics = collected?.diagnostics ?? []
             const description = extractJsDoc(declaration)
             const defaultExprNode = destructuredDefaults.get(name) ??
                 staticDefaults?.getProperty(name)?.asKind(ts.SyntaxKind.PropertyAssignment)?.getInitializer()
@@ -381,6 +392,7 @@ function createUtils(project: Project, sourceDirectory: string)
             }
 
             propMeta[name] = {
+                provenance: extractPropProvenance(type, name),
                 ...(description !== undefined ? { description } : {}),
                 ...(defaultValue !== undefined ? { defaultValue } : {}),
                 diagnostics: localDiagnostics
@@ -401,6 +413,17 @@ function createUtils(project: Project, sourceDirectory: string)
     }
 
     function typeToSchema(type: Type, node: Node, report: Report, propSink?: PropSink): Schema
+    {
+        if (activeTypes.has(type.compilerType) || activeTypes.size > 64) {
+            report("recursive-type", "Recursive type needs an explicit finite adapter payload", locationOf(node))
+            return new UnknownSchema()
+        }
+        activeTypes.add(type.compilerType)
+        try { return typeToSchemaInner(type, node, report, propSink) }
+        finally { activeTypes.delete(type.compilerType) }
+    }
+
+    function typeToSchemaInner(type: Type, node: Node, report: Report, propSink?: PropSink): Schema
     {
         // React.ComponentType<Props> (docs/slot-contract.md section 2, "React.ComponentType<Props>
         // paths"): a constructor reference, not ReactNode-domain. Checked by alias-symbol name
@@ -436,8 +459,38 @@ function createUtils(project: Project, sourceDirectory: string)
             return new ArraySchema([], typeToSchema(elementType, node, report))
         }
 
-        if (type.isAssignableTo(types.DateType))
-            return DateSchema.instance
+        if (type.getConstructSignatures().length > 0) {
+            report("unsupported-constructor-reference", "Class constructor references are not editable instance values", locationOf(node))
+            return new UnknownSchema()
+        }
+        const ref = classReference(type, classRoot)
+        if (ref) {
+            if (ref.kind === "builtin" && ref.name === "Date") return DateSchema.instance
+            const declarations = type.getSymbol()?.getDeclarations() ?? []
+            const args = type.getTypeArguments().map(t => typeToSchema(t, node, report))
+            const binding = classBindings.find(b => b.declarations.some(d => declarations.includes(d)) &&
+                JSON.stringify(b.binding.typeArguments ?? []) === JSON.stringify(args.map(t => t.toJson())))?.binding
+            if (binding) {
+                const module = binding.type.module
+                const publicRef = !module.startsWith(".") && !path.isAbsolute(module)
+                    ? {kind: "external" as const, package: module.split("/").slice(0, module.startsWith("@") ? 2 : 1).join("/"),
+                        subpath: module.split("/").slice(module.startsWith("@") ? 2 : 1).join("/") || undefined, exportName: binding.type.exportName}
+                    : ref
+                return new InstanceSchema(publicRef, args, {id: binding.id, version: binding.version}, schemaFromJson(binding.payloadSchema))
+            }
+            if (ref.kind === "builtin" && ref.name === "URL") return new InstanceSchema(ref, args, {id: "builtin/URL", version: 1}, new StringSchema())
+            if (ref.kind === "builtin" && ref.name === "Map" && args.length === 2)
+                return new InstanceSchema(ref, args, {id: "builtin/Map", version: 1}, new ArraySchema([], new ArraySchema(args)))
+            if (ref.kind === "builtin" && ref.name === "Set" && args.length === 1)
+                return new InstanceSchema(ref, args, {id: "builtin/Set", version: 1}, new ArraySchema([], args[0]))
+            if (ref.kind === "builtin" && ref.name === "RegExp")
+                return new InstanceSchema(ref, args, {id: "builtin/RegExp", version: 1}, new ObjectSchema({
+                    source: {schema: new StringSchema(), required: true}, flags: {schema: new StringSchema(), required: true},
+                    lastIndex: {schema: new NumberSchema(), required: true}
+                }))
+            report("missing-class-adapter", `No value adapter is configured for ${type.getText()}`, locationOf(node))
+            return new InstanceSchema(ref, args)
+        }
 
         const literalValue = type.getLiteralValue()
         const typeFlags = type.getFlags()
@@ -642,7 +695,7 @@ function matchesRoot(sourcePath: string, rootPath: string): boolean {
 // callers (annotations/external.ts) turn that into an
 // "external-export-missing" diagnostic; this function itself never throws
 // for a missing export.
-export function extractExternalComponentData(project: Project, dtsPath: string, exportName: string, isDefault: boolean): ComponentData | null {
+export function extractExternalComponentData(project: Project, dtsPath: string, exportName: string, isDefault: boolean, classOptions: ClassExtractionOptions = {}): ComponentData | null {
     const sourceFile = project.getSourceFile(dtsPath) ?? project.addSourceFileAtPathIfExists(dtsPath)
     if (!sourceFile) return null
 
@@ -653,7 +706,7 @@ export function extractExternalComponentData(project: Project, dtsPath: string, 
     const declaration = symbol.getDeclarations()[0]
     if (!declaration) return null
 
-    const utils = createUtils(project, path.dirname(sourceFile.getFilePath()))
+    const utils = createUtils(project, path.dirname(sourceFile.getFilePath()), classOptions)
     try {
         const signature = utils.getSignature(declaration)
         return utils.extractComponentData(
@@ -669,7 +722,7 @@ export function extractExternalComponentData(project: Project, dtsPath: string, 
     }
 }
 
-export function extractComponents(project: Project, componentRoots: string[]): ComponentData[] {
+export function extractComponents(project: Project, componentRoots: string[], classOptions: ClassExtractionOptions = {}): ComponentData[] {
     const rootPaths = componentRoots.map(root => path.resolve(root).replace(/\\/g, "/"))
     const selectedFiles = project.getSourceFiles().filter(sourceFile =>
         !sourceFile.isDeclarationFile() &&
@@ -678,7 +731,7 @@ export function extractComponents(project: Project, componentRoots: string[]): C
     const firstFile = selectedFiles[0]
     if (!firstFile) return []
 
-    const utils = createUtils(project, path.dirname(firstFile.getFilePath()))
+    const utils = createUtils(project, path.dirname(firstFile.getFilePath()), classOptions)
     try {
         return selectedFiles.flatMap(sourceFile => {
             const sourcePath = sourceFile.getFilePath().replace(/\\/g, "/")

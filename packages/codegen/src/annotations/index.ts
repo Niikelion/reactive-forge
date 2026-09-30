@@ -79,7 +79,8 @@ export function buildSlotAnnotations(
     project: Project,
     components: ComponentData[],
     annotationSources: AnnotationSourcesConfig | undefined,
-    rootDir: string
+    rootDir: string,
+    classOptions: ClassExtractionOptions = {}
 ): SlotAnnotationResult {
     const result: SlotAnnotationResult = {
         used: false,
@@ -116,7 +117,7 @@ export function buildSlotAnnotations(
     }
 
     if (annotationSources.libraries && annotationSources.libraries.length > 0) {
-        const external = resolveLibraryAnnotationSources(project, annotationSources.libraries, rootDir, rootDir)
+        const external = resolveLibraryAnnotationSources(project, annotationSources.libraries, rootDir, rootDir, classOptions)
         allRules.push(...external.rules)
         result.externalLibraries = external.libraryRefs
         for (const [id, componentData] of external.externalComponents)
@@ -152,3 +153,4 @@ export function buildSlotAnnotations(
 function idOfProjectComponent(component: ComponentData, rootDir: string): string {
     return componentId(rootDir, component.sourcePath, component.name)
 }
+import type {ClassExtractionOptions} from "../classBindings.js"

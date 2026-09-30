@@ -12,7 +12,7 @@ export class DateSchema implements Schema {
     }
 
     verifyConstructType(construct: ValueConstruct): boolean {
-        return construct.type === "date"
+        return construct.type === "date" && Number.isFinite(Date.parse(construct.value))
     }
 
     withTransformedChildren(): Schema {

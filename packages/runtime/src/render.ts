@@ -1,4 +1,4 @@
-import {createElement, Fragment, ReactElement, ReactNode} from "react"
+import {cloneElement, createElement, Fragment, isValidElement, ReactElement, ReactNode} from "react"
 import {
     ArraySchema,
     ComponentIdentity,
@@ -24,6 +24,8 @@ import {
 } from "@reactive-forge/schema"
 import {CompositionDocument, CompositionDocumentV1, CompositionDocumentV2, CompositionInstance, CompositionSlotItem, CompositionValue} from "./composition.js"
 import {CompositionDiagnostic, validateComposition} from "./validate.js"
+import {decodeAdapterValue} from "./adapters.js"
+import {toValueJson} from "@reactive-forge/schema"
 
 /**
  * Host-supplied bindings a rendered composition's `"callback"` prop values resolve against. Never
@@ -33,6 +35,7 @@ import {CompositionDiagnostic, validateComposition} from "./validate.js"
 export type CallbackRegistry = Record<string, (...args: unknown[]) => unknown>
 
 export interface RenderOptions {
+    valueAdapters?: import("@reactive-forge/schema").ValueAdapterRegistry
     callbacks?: CallbackRegistry
 }
 
@@ -75,6 +78,7 @@ function resolveElementReference(
 
 function constructToJs(construct: ValueConstruct, metadata: MetadataDocument, library: ComponentLibraryData): unknown {
     switch (construct.type) {
+        case "instance": return decodeAdapterValue(toValueJson(construct), library.valueAdapters)
         case "void":
         case "undefined":
             return undefined
@@ -199,7 +203,11 @@ function renderCompositionValue(
     switch (value.kind) {
         case "leaf": {
             const construct = fromValueJson(stripNullish(schema), value.value)
-            return constructToJs(construct, metadata, library)
+            try { return constructToJs(construct, metadata, library) }
+            catch (error) {
+                throw new CompositionValidationError([{severity: "error", code: "value-construction-failed", path: `${componentMeta.id}.${JSON.stringify(path)}`,
+                    message: error instanceof Error ? error.message : String(error)}])
+            }
         }
         case "nodes":
             return renderNodesValue(componentMeta, path, value.value.items, metadata, library, callbacks)
@@ -223,7 +231,10 @@ function renderCompositionValue(
             if (!(stripped instanceof ArraySchema)) throw new Error(`renderComposition: internal error - expected an ArraySchema at a validated "array" CompositionValue`)
             const elementSchema = resolveSegment(stripped, {kind: "each"})
             if (isPathResolutionDiagnostic(elementSchema)) throw new Error(`renderComposition: internal error - unresolvable element schema on a validated "array" CompositionValue`)
-            return value.items.map(item => renderCompositionValue(componentMeta, [...path, {kind: "each"}], elementSchema, item.value, metadata, library, callbacks))
+            return value.items.map(item => {
+                const rendered = renderCompositionValue(componentMeta, [...path, {kind: "each"}], elementSchema, item.value, metadata, library, callbacks)
+                return isValidElement(rendered) ? cloneElement(rendered, {key: item.itemId}) : rendered
+            })
         }
         case "variant": {
             const stripped = stripNullish(schema)
@@ -269,6 +280,7 @@ export function renderComposition(
     library: ComponentLibraryData,
     options: RenderOptions = {}
 ): ReactElement {
+    if (options.valueAdapters) library = {...library, valueAdapters: {...library.valueAdapters, ...options.valueAdapters}}
     const callbacks = options.callbacks ?? {}
     const result = validateComposition(doc, metadata, library, callbacks)
     if (!result.valid) throw new CompositionValidationError(result.diagnostics)

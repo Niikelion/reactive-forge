@@ -11,6 +11,7 @@ import semver from "semver"
 import { ComponentData } from "../types.js"
 import { Diagnostic } from "../metadataTypes.js"
 import { extractExternalComponentData } from "../extract.js"
+import type {ClassExtractionOptions} from "../classBindings.js"
 import { shortHash } from "../hash.js"
 import { ExternalComponentIdentity, ExternalLibraryRef, LibraryAnnotationSource, SlotRule } from "../slotTypes.js"
 import { AuthoredRule } from "./merge.js"
@@ -108,7 +109,8 @@ export function resolveLibraryAnnotationSources(
     project: Project,
     libraries: LibraryAnnotationSource[],
     rootDir: string,
-    projectRoot: string
+    projectRoot: string,
+    classOptions: ClassExtractionOptions = {}
 ): ExternalResolutionResult {
     const result: ExternalResolutionResult = { libraryRefs: [], externalComponents: new Map(), rules: [] }
 
@@ -187,7 +189,7 @@ export function resolveLibraryAnnotationSources(
                 if (!entry.identity) continue
 
                 const dtsPath = resolveDtsPath(packageDir, packageJson, entry.identity.subpath)
-                const componentData = dtsPath ? extractExternalComponentData(project, dtsPath, entry.identity.exportName, entry.identity.isDefault) : null
+                const componentData = dtsPath ? extractExternalComponentData(project, dtsPath, entry.identity.exportName, entry.identity.isDefault, classOptions) : null
 
                 if (!componentData) {
                     diagnostics.push({
