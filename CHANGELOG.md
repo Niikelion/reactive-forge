@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.1
+
+- Replace dedicated rich-text slots with generic component groups, including `forge/Text` and `forge/RichText`.
+- Support explicit host registrations and validated host-owned value factories.
+- Extract colocated and external group annotations, with project overrides and static resolution.
+- Enforce restrictions in nested object, array and union slots; provide custom component editors.
+- Remove the fixed rich-text format, renderer and editor. Legacy values require explicit host conversion.
+
+Metadata version 4 supports group constraints. Saved compositions retain concrete component instances. Validated with 171 regression tests, builds, type checks, lint and package export checks.
+
 ## 2.0.0
 
 Breaking rebuild of Reactive Forge around portable component metadata and versioned composition documents.

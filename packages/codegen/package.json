@@ -1,6 +1,6 @@
 {
   "name": "@reactive-forge/codegen",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.cjs",
@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@commander-js/extra-typings": "^13.1.0",
-    "@reactive-forge/schema": "2.0.0",
+    "@reactive-forge/schema": "2.0.1",
     "@types/prompts": "^2.4.9",
     "commander": "^13.1.0",
     "dedent": "^1.5.3",
