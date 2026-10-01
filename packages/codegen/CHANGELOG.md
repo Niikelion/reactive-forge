@@ -1,5 +1,11 @@
 # @reactive-forge/codegen
 
+## 2.1.0
+
+### Patch Changes
+
+- @reactive-forge/schema@2.1.0
+
 ## 2.0.4
 
 ### Patch Changes
