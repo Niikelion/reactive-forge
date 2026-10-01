@@ -1,5 +1,12 @@
 # @reactive-forge/runtime
 
+## 2.0.4
+
+### Patch Changes
+
+- 39ffefc: Emit node-slot children directly between JSX tags without wrapping them in a Fragment. Other node props retain their existing Fragment behavior.
+  - @reactive-forge/schema@2.0.4
+
 ## 2.0.3
 
 ### Patch Changes

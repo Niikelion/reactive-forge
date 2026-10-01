@@ -1,5 +1,13 @@
 # @reactive-forge/editor
 
+## 2.0.4
+
+### Patch Changes
+
+- Updated dependencies [39ffefc]
+  - @reactive-forge/runtime@2.0.4
+  - @reactive-forge/schema@2.0.4
+
 ## 2.0.3
 
 ### Patch Changes

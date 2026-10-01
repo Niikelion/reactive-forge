@@ -1,6 +1,6 @@
 {
   "name": "@reactive-forge/editor",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "license": "MIT",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -23,8 +23,8 @@
     "build": "tsdown && attw --pack ."
   },
   "dependencies": {
-    "@reactive-forge/runtime": "2.0.3",
-    "@reactive-forge/schema": "2.0.3"
+    "@reactive-forge/runtime": "2.0.4",
+    "@reactive-forge/schema": "2.0.4"
   },
   "devDependencies": {
     "@gamedev-sensei/ts-config": "^2.0.1",
