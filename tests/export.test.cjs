@@ -204,9 +204,9 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     assert.match(tsxSource, /onRender=\{callbacks\.onCardRender\}/, 'a callback reference serializes as a callbacks.<name> property access, never a function body');
     assert.match(tsxSource, /onActivate=\{callbacks\.onShowcaseActivate\}/);
     assert.doesNotMatch(tsxSource, /=>\s*\{/, 'no fabricated function body is ever emitted for a callback reference');
-    // "children" is an ordinary "nodes" prop: a multi-item slot serializes as a JSX attribute
-    // holding a Fragment, never nested `<Card>...</Card>` child syntax.
-    assert.match(tsxSource, /children=\{<>\{"Intro: "\}<Greeter[^]*?\{null\}<ExportShowcase/, 'children (text, instance, void, instance) serializes as a Fragment-wrapped "nodes" attribute, in order');
+    assert.doesNotMatch(tsxSource, /\bchildren=/, 'children never emits as a JSX attribute');
+    assert.match(tsxSource, /<Card[^>]*><>\{"Intro: "\}<Greeter[^]*?\{null\}<ExportShowcase/, 'children renders inside Card in its original order');
+    assert.match(tsxSource, /<\/Card>/, 'Card has a closing tag');
     fs.writeFileSync(exportedFilePath, tsxSource, 'utf8');
 
     compileTsx([exportedFilePath]);
@@ -224,6 +224,30 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     assert.deepEqual(exportedCalls, ['card', 'showcase'], 'both callback references fired during the exported-component render, resolved through the supplied host callbacks object, never a stored function body');
 
     assert.equal(exportedHtml, runtimeHtml, 'the exported TSX renders byte-identical HTML to @reactive-forge/runtime\'s renderComposition for the same document');
+
+    // Explicit empty children remain present; absent children remain absent.
+    // Text stays an expression so JSX markup, entities and whitespace are preserved.
+    const childCases = [
+      ['absent', undefined],
+      ['empty', {kind: 'nodes', value: {items: []}}],
+      ['text', {kind: 'nodes', value: {items: [{kind: 'text', itemId: 'escaped-child', value: ' <tag>&amp; {value} "quoted"\n tail '} ]}}],
+      ['instance', {kind: 'nodes', value: {items: [doc.root.props.children.value.value.items[1]]}}],
+    ];
+    for (const [name, children] of childCases) {
+      const props = {title: doc.root.props.title};
+      if (children !== undefined) props.children = {kind: 'composed', value: children};
+      const candidate = {...doc, root: {...doc.root, props}};
+      const source = exportToTsx(candidate, metadata, registry, {resolveImportPath: scratchRelativeResolver()});
+      assert.doesNotMatch(source, /\bchildren=/);
+      if (children === undefined) assert.match(source, /<Card title="Export Proof" \/>/);
+      else assert.match(source, /<Card title="Export Proof">[^]*<\/Card>/);
+      const file = path.join(scratchDir, `Children-${name}.tsx`);
+      fs.writeFileSync(file, source);
+      compileTsx([file]);
+      const Component = require(file).default;
+      assert.equal(renderToStaticMarkup(createElement(Component, {callbacks: {}})),
+        renderToStaticMarkup(renderComposition(candidate, metadata, registry)), `${name} children preserve rendered output`);
+    }
   } finally {
     cleanFixtureOutput();
   }

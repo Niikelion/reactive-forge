@@ -50,9 +50,8 @@ import {CompositionValidationError} from "./render.js"
 //  - "componentRef": a bare identifier expression (`prop={Button}`), never JSX-wrapped, never
 //    called - with an import added for the referenced ComponentIdentity (project or external).
 //
-// `children` is NOT a special case here: it is just another `"composed"`-kind prop whose value
-// happens to be `"nodes"`-kind, serialized as a JSX attribute (`children={...}`) exactly like any
-// other prop - never nested JSX children syntax.
+// `children` stays an ordinary composition prop, but is emitted between the JSX tags.
+// Its serialized expression preserves the runtime's Fragment/array/value boundaries.
 //
 // `collectValueComponentIds`'s old v2 "element" case is DELETED ENTIRELY (not merely dead-code-
 // unreachable): a v3 "leaf" CompositionValue can never contain a legacy "element" node at all
@@ -504,9 +503,8 @@ function serializePropFragment(
     return `${propName}={${exprText}}`
 }
 
-// Renders one CompositionInstance as a JSX expression. Always self-closing: v3 has no special
-// "children" nesting case (see the module doc comment above) - every prop, including one literally
-// named "children", is emitted as an ordinary attribute via serializePropFragment.
+// Components without an explicit children prop remain self-closing. Other node slots
+// remain attributes even when they contain JSX.
 function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, callbacksParamName: string): string {
     const meta = findComponentMeta(metadata, node.componentId)
     const {key} = instanceImportKeyAndIdentity(node.componentId, metadata)
@@ -514,7 +512,15 @@ function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument
     if (entry === undefined) throw new Error(`exportToTsx: internal error - missing import table entry for component id "${meta.id}"`)
 
     const propFragments = Object.entries(node.props)
+        .filter(([name]) => name !== "children")
         .map(([name, value]) => serializePropFragment(name, value, meta, imports, metadata, callbacksParamName))
-    return `<${entry.localName}${propFragments.length > 0 ? ` ${propFragments.join(" ")}` : ""} />`
+    const opening = `<${entry.localName}${propFragments.length > 0 ? ` ${propFragments.join(" ")}` : ""}`
+    const children = node.props["children"]
+    if (children === undefined) return `${opening} />`
+    const expression = children.kind === "callback"
+        ? serializeCallbackExpression(children.name, callbacksParamName)
+        : serializeCompositionValue(meta, ["children"], children.value, metadata, imports, callbacksParamName)
+    const content = expression.startsWith("<") ? expression : `{${expression}}`
+    return `${opening}>${content}</${entry.localName}>`
 }
 import {findValueAdapter, visitInstanceValues} from "./adapters.js"

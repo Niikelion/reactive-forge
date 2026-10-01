@@ -8,6 +8,8 @@ npm install @reactive-forge/runtime@2 @reactive-forge/schema@2 react@19
 
 Core APIs: `validateComposition`, `renderComposition`, `exportToTsx`, `encodeAdapterValue`.
 
+TSX export writes `children` inside the element (`<Card><Child /></Card>`). Other React node props remain JSX attributes. Composition storage and validation still treat `children` as a regular prop.
+
 Hosts register group membership explicitly and can supply a default value factory:
 
 ```ts
