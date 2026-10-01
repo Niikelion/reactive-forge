@@ -1,5 +1,12 @@
 # @reactive-forge/runtime
 
+## 2.0.3
+
+### Patch Changes
+
+- 3af9466: Export the `children` prop between JSX opening and closing tags instead of as a JSX attribute. Preserve child value boundaries, escaping and runtime behavior; other React node props remain attributes.
+  - @reactive-forge/schema@2.0.3
+
 ## 2.0.2
 
 ### Patch Changes
