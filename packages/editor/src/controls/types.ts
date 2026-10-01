@@ -1,5 +1,5 @@
 import {FC} from "react"
-import {CallbackRegistry, CompositionPropValue} from "@reactive-forge/runtime"
+import {CallbackRegistry, CompositionPropDeclaration, CompositionPropValue} from "@reactive-forge/runtime"
 import {DefaultValueJson, Json, SchemaJson, ValueJson} from "@reactive-forge/schema"
 
 // v3 (docs/slot-contract-recursive.md): a control's prop value is exactly a
@@ -47,6 +47,8 @@ export interface ControlProps {
     editorHints?: Record<string, Json>
     /** Names available to a function-typed prop's control (see FunctionControl). */
     callbacks?: CallbackRegistry
+    /** Version 5 declarations. Function controls bind these inputs instead of legacy callbacks. */
+    declaredProps?: Record<string, CompositionPropDeclaration>
     /** Lets a composite control (union/array/object) resolve controls for nested schemas. */
     controls?: ControlOverrides
     onChange: (value: ControlPropValue) => void

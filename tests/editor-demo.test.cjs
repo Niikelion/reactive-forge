@@ -359,7 +359,7 @@ test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + 
 
     const exportedComponent = require(exportedFilePath).default;
     const { createElement } = require('react');
-    const exportedHtml = renderToStaticMarkup(createElement(exportedComponent, { callbacks: {} }));
+    const exportedHtml = renderToStaticMarkup(createElement(exportedComponent));
     assert.equal(exportedHtml, projectOnlyRuntimeHtml, 'the exported TSX (project components only) renders byte-identical HTML to @reactive-forge/runtime\'s renderComposition for the same document');
 
     // Exercise the exact nested document mounted by the demo, including two nodes in one
@@ -377,7 +377,7 @@ test('editor demo phase 4: exportToTsx of the demo\'s live document (SlotCard + 
     fs.writeFileSync(nestedExportPath, exportToTsx(nestedRoundTrip, metadata, registry, { resolveImportPath }), 'utf8');
     assert.equal(compileTsx(scratchDir, [nestedExportPath]), null, 'nested demo TSX typechecks');
     const NestedExport = require(nestedExportPath).default;
-    assert.equal(renderToStaticMarkup(createElement(NestedExport, { callbacks: {} })), nestedRuntimeHtml,
+    assert.equal(renderToStaticMarkup(createElement(NestedExport)), nestedRuntimeHtml,
       'nested demo save/reload/export preserves runtime output without editor outlets');
   } finally {
     cleanGenerated();

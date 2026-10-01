@@ -1,4 +1,4 @@
-import type {ComponentIdentity, ValueJson, VariantLiteral} from "@reactive-forge/schema"
+import type {ComponentIdentity, SchemaJson, ValueJson, VariantLiteral} from "@reactive-forge/schema"
 
 /** Historical payload, retained only as input to explicit legacy migrations. */
 interface RichTextValueJson {kind: "richText", version: 1, inline: boolean, nodes: unknown[]}
@@ -36,6 +36,7 @@ interface RichTextValueJson {kind: "richText", version: 1, inline: boolean, node
  * knows immediately how to recurse.
  */
 export type CompositionValue =
+    | { kind: "prop", name: string }
     // Ordinary, non-slot-domain content. Serializes through the existing, UNCHANGED
     // ValueJson/fromValueJson — primitives, plain objects, plain arrays, dates, etc. A "leaf" node
     // is a claim: "resolvePath at this exact SlotPath is not ReactNode/ComponentType domain, and
@@ -82,6 +83,7 @@ export interface CompositionArrayItem {
  * nested inside it uniformly.
  */
 export type CompositionPropValue =
+    | { kind: "prop", name: string }
     | { kind: "callback", name: string }
     | { kind: "composed", value: CompositionValue }
 
@@ -133,10 +135,20 @@ export type CompositionSlotItem =
  * Root identity: `root` is a `CompositionInstance` like any other, with its own `instanceId` - no
  * special-cased "root has no id" exception, unchanged from v2.
  */
-export interface CompositionDocument {
-    schemaVersion: 3 | 4
-    root: CompositionInstance
+/** Explicit public API of a composed component. Runtime values never enter this declaration. */
+export interface CompositionPropDeclaration {
+    schema: SchemaJson
+    required: boolean
+    defaultValue?: ValueJson
+    description?: string
+    /** Explicit source for exact TypeScript types, including native React callback signatures. */
+    typeSource?: {componentId: string, propName: string}
 }
+
+export type CompositionDocument =
+    | {schemaVersion: 3 | 4, root: CompositionInstance, props?: never}
+    | {schemaVersion: 5, root: CompositionInstance, props: Record<string, CompositionPropDeclaration>}
+
 
 // ---------------------------------------------------------------------------------------------
 // v2 shapes (unchanged from the phase-2/phase-3 implementation), kept only as

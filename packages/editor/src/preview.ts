@@ -345,12 +345,13 @@ export function computePreviewState(
     document: CompositionDocument,
     metadata: MetadataDocument,
     library: ComponentLibraryData,
-    callbacks: CallbackRegistry
+    callbacks: CallbackRegistry = {},
+    props: Record<string, unknown> = {}
 ): PreviewState {
-    const validation = validateComposition(document, metadata, library, callbacks)
+    const validation = validateComposition(document, metadata, library, callbacks, props)
     if (!validation.valid) return {document, element: null, validation}
     try {
-        const element = renderComposition(document, metadata, library, {callbacks})
+        const element = renderComposition(document, metadata, library, {callbacks, props})
         return {document, element, validation}
     } catch (error) {
         if (error instanceof CompositionValidationError) {
@@ -368,6 +369,8 @@ export interface UseComponentPreviewOptions {
     initialDocument: CompositionDocument
     /** Host-supplied named callback bindings; see `CallbackRegistry` in `@reactive-forge/runtime`. */
     callbacks?: CallbackRegistry
+    /** Values for the composition's explicitly declared public props, including functions. */
+    props?: Record<string, unknown>
     /** Which instance prop edits target; defaults to the document root (`[]`). */
     targetPath?: ValuePath
 }
@@ -394,15 +397,15 @@ export interface ComponentPreviewHandle {
  * comment for the state-ownership rationale.
  */
 export function useComponentPreview(options: UseComponentPreviewOptions): ComponentPreviewHandle {
-    const {metadata, library, initialDocument, callbacks, targetPath} = options
+    const {metadata, library, initialDocument, callbacks, props, targetPath} = options
     const [document, setDocument] = useState(initialDocument)
     const path = targetPath ?? []
     const resolvedCallbacks = callbacks ?? {}
 
     const state = useMemo(
-        () => computePreviewState(document, metadata, library, resolvedCallbacks),
+        () => computePreviewState(document, metadata, library, resolvedCallbacks, props),
         // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedCallbacks is a fresh object per render when the caller omits `callbacks`; identity-comparing `callbacks` itself is the intent.
-        [document, metadata, library, callbacks]
+        [document, metadata, library, callbacks, props]
     )
 
     const updateProp = useCallback((propName: string, value: CompositionPropValue) => {

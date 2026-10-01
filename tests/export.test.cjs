@@ -117,14 +117,20 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     // remaining ValueJson kind (string, number, boolean, array, object, date, bigint) as a
     // {kind:"leaf", ...} CompositionValue, plus two callback references.
     const doc = {
-      schemaVersion: 3,
+      schemaVersion: 5,
+      props: {
+        onCardRender: {schema: cardMeta.props.onRender.schema, required: true, typeSource: {componentId: cardMeta.id, propName: 'onRender'}},
+        onShowcaseActivate: {schema: showcaseMeta.props.onActivate.schema, required: true, typeSource: {componentId: showcaseMeta.id, propName: 'onActivate'}},
+        heading: {schema: {type: 'string'}, required: true, defaultValue: {type: 'string', value: 'Export Proof'}},
+        unused: {schema: {type: 'number'}, required: false},
+      },
       root: {
         kind: 'instance',
         instanceId: 'root-card',
         componentId: cardMeta.id,
         props: {
-          title: { kind: 'composed', value: { kind: 'leaf', value: { type: 'string', value: 'Export Proof' } } },
-          onRender: { kind: 'callback', name: 'onCardRender' },
+          title: {kind: 'prop', name: 'heading'},
+          onRender: { kind: 'prop', name: 'onCardRender' },
           children: {
             kind: 'composed',
             value: {
@@ -158,7 +164,7 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
                         } } } },
                         when: { kind: 'composed', value: { kind: 'leaf', value: { type: 'date', value: '2024-01-01T00:00:00.000Z' } } },
                         big: { kind: 'composed', value: { kind: 'leaf', value: { type: 'bigint', value: '123456789012345' } } },
-                        onActivate: { kind: 'callback', name: 'onShowcaseActivate' },
+                        onActivate: { kind: 'prop', name: 'onShowcaseActivate' },
                       },
                     },
                   },
@@ -182,7 +188,7 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
       onCardRender: () => runtimeCalls.push('card'),
       onShowcaseActivate: () => runtimeCalls.push('showcase'),
     };
-    const runtimeElement = renderComposition(doc, metadata, registry, { callbacks: runtimeCallbacks });
+    const runtimeElement = renderComposition(doc, metadata, registry, { props: runtimeCallbacks });
     const runtimeHtml = renderToStaticMarkup(runtimeElement);
     assert.deepEqual(runtimeCalls, ['card', 'showcase'], 'both callback references fired during the runtime render');
 
@@ -194,15 +200,17 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     assert.match(tsxSource, /^import \{ ExportShowcase } from/m, 'imports the ExportShowcase component');
     assert.match(tsxSource, /^import \{ Greeter } from/m, 'imports the Greeter component');
     assert.match(tsxSource, /export default function ExportedComposition/, 'exports the default composition component');
-    assert.match(tsxSource, /title="Export Proof"/, 'a plain string value serializes as a bare JSX string attribute');
+    assert.match(tsxSource, /title=\{values\["heading"\]\}/, 'explicit string binding is read from the public props');
+    assert.match(tsxSource, /"unused"\?: number/, 'unused explicitly declared props remain public');
     assert.match(tsxSource, /times=\{2\}/, 'a number value serializes as a numeric literal expression');
     assert.match(tsxSource, /active=\{true\}/, 'a boolean value serializes as a literal expression');
     assert.match(tsxSource, /tags=\{\["a", "b"\]\}/, 'an array value serializes as an array-literal expression');
     assert.match(tsxSource, /meta=\{\{source: "fixture"\}\}/, 'an object value serializes as an object-literal expression');
     assert.match(tsxSource, /when=\{new Date\("2024-01-01T00:00:00\.000Z"\)\}/, 'a date value serializes as a `new Date(...)` expression');
     assert.match(tsxSource, /big=\{123456789012345n\}/, 'a bigint value serializes as a bigint literal expression');
-    assert.match(tsxSource, /onRender=\{callbacks\.onCardRender\}/, 'a callback reference serializes as a callbacks.<name> property access, never a function body');
-    assert.match(tsxSource, /onActivate=\{callbacks\.onShowcaseActivate\}/);
+    assert.match(tsxSource, /onRender=\{values\["onCardRender"\]\}/);
+    assert.match(tsxSource, /onActivate=\{values\["onShowcaseActivate"\]\}/);
+    assert.doesNotMatch(tsxSource, /callbacks|Record<string|\bany\b/);
     assert.doesNotMatch(tsxSource, /=>\s*\{/, 'no fabricated function body is ever emitted for a callback reference');
     assert.doesNotMatch(tsxSource, /\bchildren=/, 'children never emits as a JSX attribute');
     assert.match(tsxSource, /<Card[^>]*>\{"Intro: "\}<Greeter[^]*?\{null\}<ExportShowcase/, 'children renders directly inside Card in its original order');
@@ -220,10 +228,43 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
       onCardRender: () => exportedCalls.push('card'),
       onShowcaseActivate: () => exportedCalls.push('showcase'),
     };
-    const exportedHtml = renderToStaticMarkup(createElement(exportedComponent, { callbacks: exportedCallbacks }));
+    const exportedHtml = renderToStaticMarkup(createElement(exportedComponent, exportedCallbacks));
     assert.deepEqual(exportedCalls, ['card', 'showcase'], 'both callback references fired during the exported-component render, resolved through the supplied host callbacks object, never a stored function body');
 
     assert.equal(exportedHtml, runtimeHtml, 'the exported TSX renders byte-identical HTML to @reactive-forge/runtime\'s renderComposition for the same document');
+
+    for (const [index, bindingName] of ['Card', 'ExportedComposition', 'default', 'save-click', 'callbacks'].entries()) {
+      const candidate = structuredClone(doc);
+      candidate.props = {...doc.props, [bindingName]: doc.props.onCardRender};
+      delete candidate.props.onCardRender;
+      delete candidate.props.onShowcaseActivate;
+      candidate.root.props.onRender.name = bindingName;
+      candidate.root.props.children.value.value.items[3].instance.props.onActivate.name = bindingName;
+      const source = exportToTsx(candidate, metadata, registry, {resolveImportPath: scratchRelativeResolver()});
+      const file = path.join(scratchDir, `Shared-${index}.tsx`);
+      fs.writeFileSync(file, source);
+      compileTsx([file]);
+      let calls = 0;
+      const html = renderToStaticMarkup(createElement(require(file).default, {[bindingName]: () => { calls++; }}));
+      assert.equal(calls, 2, `explicit ${bindingName} declaration is shared by both handlers`);
+      assert.equal(html, runtimeHtml);
+    }
+    const renamedSource = exportToTsx(doc, metadata, registry, {resolveImportPath: scratchRelativeResolver(), exportedComponentName: 'Card'});
+    const renamedFile = path.join(scratchDir, 'Renamed.tsx');
+    fs.writeFileSync(renamedFile, renamedSource);
+    compileTsx([renamedFile]);
+    assert.equal(renderToStaticMarkup(createElement(require(renamedFile).default, exportedCallbacks)), runtimeHtml);
+    assert.equal(renderToStaticMarkup(createElement(exportedComponent, {...exportedCallbacks, heading: 'Different'})),
+      renderToStaticMarkup(renderComposition(doc, metadata, registry, {props: {...runtimeCallbacks, heading: 'Different'}})),
+      'explicit public values override declaration defaults equally in generated TSX and runtime');
+    const legacy = structuredClone(doc);
+    legacy.root.props.onRender = {kind: 'callback', name: 'legacy'};
+    assert.throws(() => exportToTsx(legacy, metadata, registry), /explicitly declared function prop/,
+      'legacy callback registry cannot create an implicit public input');
+    const undeclared = structuredClone(doc);
+    delete undeclared.props.onCardRender;
+    assert.throws(() => exportToTsx(undeclared, metadata, registry), CompositionValidationError,
+      'binding names never synthesize undeclared props');
 
     // Explicit empty children remain present; absent children remain absent.
     // Text stays an expression so JSX markup, entities and whitespace are preserved.
@@ -234,11 +275,12 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
       ['instance', {kind: 'nodes', value: {items: [doc.root.props.children.value.value.items[1]]}}],
     ];
     for (const [name, children] of childCases) {
-      const props = {title: doc.root.props.title};
+      const props = {title: {kind: 'composed', value: {kind: 'leaf', value: {type: 'string', value: 'Export Proof'}}}};
       if (children !== undefined) props.children = {kind: 'composed', value: children};
-      const candidate = {...doc, root: {...doc.root, props}};
+      const candidate = {...doc, props: {}, root: {...doc.root, props}};
       const source = exportToTsx(candidate, metadata, registry, {resolveImportPath: scratchRelativeResolver()});
       assert.doesNotMatch(source, /\bchildren=/);
+      assert.match(source, /export default function ExportedComposition\(\)/, 'no declarations means zero public inputs');
       if (children === undefined) assert.match(source, /<Card title="Export Proof" \/>/);
       else assert.match(source, /<Card title="Export Proof">[^]*<\/Card>/);
       if (name === 'empty') assert.match(source, /<Card title="Export Proof"><\/Card>/);
@@ -248,7 +290,7 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
       fs.writeFileSync(file, source);
       compileTsx([file]);
       const Component = require(file).default;
-      assert.equal(renderToStaticMarkup(createElement(Component, {callbacks: {}})),
+      assert.equal(renderToStaticMarkup(createElement(Component)),
         renderToStaticMarkup(renderComposition(candidate, metadata, registry)), `${name} children preserve rendered output`);
     }
   } finally {
@@ -393,7 +435,7 @@ test('exportToTsx serializes "nodes"/"richText"/"componentRef" slot values ident
 
     const exportedModule = require(exportedFilePath);
     const exportedComponent = exportedModule.default;
-    const exportedHtml = renderToStaticMarkup(createElement(exportedComponent, { callbacks: {} }));
+    const exportedHtml = renderToStaticMarkup(createElement(exportedComponent));
 
     assert.equal(exportedHtml, runtimeHtml, 'the exported TSX renders byte-identical HTML to renderComposition for a document exercising "nodes"/"richText"/"componentRef"');
   } finally {

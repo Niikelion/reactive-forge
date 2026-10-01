@@ -5,6 +5,7 @@ import {
     ExternalComponentIdentity,
     MetadataDocument,
     resolveSlotPolicy,
+    schemaFromJson,
     SlotPath,
     ValueJson
 } from "@reactive-forge/schema"
@@ -17,48 +18,13 @@ import {
 } from "./composition.js"
 import {validateComposition} from "./validate.js"
 import {CompositionValidationError} from "./render.js"
+import {exportSchemaType} from "./export-types.js"
 
-// Composition-to-TSX export (gate E, extended for slots — docs/slot-contract.md section 9, then
-// generalized to the recursive v3 value model — docs/slot-contract-recursive.md section 5). Pure
-// source-text generation - no compiler dependency (no ts-morph/typescript/esbuild), deliberately, so
-// this can live in @reactive-forge/runtime without breaking its "browser runtime independent of
-// compiler tooling" contract (docs/baseline.md, "Runtime (gate D, part 1)").
-//
-// v3: accepts the v3 CompositionDocument shape only (composition.ts's plain, unsuffixed names -
-// see that file's versioning doc comment). A schemaVersion 1/2 document is refused with a plain
-// Error naming the required migration step(s), matching validate.ts's "unsupported-schema-version"
-// rejection (exportToTsx has no CompositionDiagnostic machinery of its own, so this stays a thrown
-// Error, as the v1/v2 exporters already did for their own version gates).
-//
-// serializeCompositionValue mirrors render.ts's renderCompositionValue EXACTLY, in the SAME
-// dispatch shape (docs/slot-contract-recursive.md section 5's table), in source-text form:
-//  - "leaf": serializeValueExpression - unchanged plain ValueJson serialization.
-//  - "object"/"array"/"variant": the NEW recursive cases - an object-literal/array-literal
-//    expression per field/entry, or (for "variant") a transparent pass-through. The "array" case
-//    directly replaces v2's isDeclaredArrayProp/serializeSlotArrayExpression special case entirely:
-//    a declared TypeScript array is now represented by a real "array" CompositionValue node whose
-//    entries are independently "nodes"-kind-or-not, so a real array-literal expression with each
-//    entry's own independent Fragment-wrapping falls out of the SAME "nodes" dispatch used
-//    everywhere else in the tree - this is the literal flat-array-gap closure (contract worked
-//    example 8.3).
-//  - "nodes": each CompositionSlotItem in order ("instance" -> nested JSX element, "text" -> a
-//    string literal expression, "void" -> `null`), wrapped in a Fragment (`<>...</>`) when there is
-//    more than one item OR the resolved policy has `multiple === true` literally set as an own key
-//    on the resolved EffectiveSlotRule.slot - the exact condition render.ts's renderNodesValue
-//    checks, resolved at THIS node's own exact SlotPath via `resolveSlotPolicy` directly (no longer
-//    routed through the old top-level-only `resolvePropSlotRules`).
-//  - "componentRef": a bare identifier expression (`prop={Button}`), never JSX-wrapped, never
-//    called - with an import added for the referenced ComponentIdentity (project or external).
-//
-// `children` stays an ordinary composition prop, but is emitted between the JSX tags.
-// Node-slot children are emitted directly; other slot props retain their Fragment boundaries.
-//
-// `collectValueComponentIds`'s old v2 "element" case is DELETED ENTIRELY (not merely dead-code-
-// unreachable): a v3 "leaf" CompositionValue can never contain a legacy "element" node at all
-// (docs/slot-contract-recursive.md section 1.4, enforced by validate.ts's `containsLegacyElement`
-// upstream of export), so there is nothing left for a ValueJson-walking import collector to find.
-// The import table is now built by walking `CompositionValue` itself (`collectCompositionValueComponentIds`
-// below), never by walking a leaf's own `ValueJson`.
+// Generates browser-safe TSX without compiler dependencies. Public inputs come exclusively
+// from schemaVersion 5's explicit doc.props declarations, including unused declarations.
+// Legacy callback bindings remain supported by live rendering but require explicit conversion
+// before export. Nested nodes and component references add imports recursively; children render
+// directly inside JSX tags, while other multi-node slots retain their Fragment boundaries.
 
 export interface ExportOptions {
     valueAdapters?: import("@reactive-forge/schema").ValueAdapterRegistry
@@ -80,15 +46,10 @@ export interface ExportOptions {
      * below), which never needs a project-relative resolution.
      */
     resolveImportPath?: (component: ComponentMetadata) => string
-    /**
-     * Name of the prop the exported component accepts for resolving `"callback"`-kind prop values
-     * at render time. Default: "callbacks".
-     */
-    callbacksParamName?: string
 }
 
 /**
- * Renders a v3 `CompositionDocument` back into TSX source text: import statements for every
+ * Renders a current `CompositionDocument` back into TSX source text: import statements for every
  * distinct component the tree references - as a nested instance or a `"componentRef"` prop value
  * (project or external identity) - and a single exported component whose JSX body mirrors the
  * composition tree exactly.
@@ -96,12 +57,11 @@ export interface ExportOptions {
  * `exportToTsx` requires `library` (needed to run `validateComposition`, the exact function
  * `renderComposition` also runs before rendering) and throws `CompositionValidationError` - the
  * same error type/shape `renderComposition` throws, not a parallel one - before serializing
- * anything, so a document with a forbidden nested component, a disallowed rich-text mark, excess
+ * anything, so a document with a forbidden nested component, invalid public prop binding, excess
  * cardinality, or a legacy `"element"` node hidden inside a `"leaf"` value can never produce TSX
- * source text at all. Runs with no `callbacks` registry (export has nothing live to check callback
- * names against - it only ever emits `callbacks.name` symbolically), so an `unresolved-callback`
- * diagnostic is not raised here; every other check (slot policy, required props, value types,
- * component registration, the legacy-`"element"` ban) still runs in full.
+ * source text at all. Public prop declarations and references are validated structurally;
+ * their runtime values are supplied by the caller of the generated component. Legacy callback
+ * references are refused instead of inferring a public input.
  */
 export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument, library: ComponentLibraryData, options: ExportOptions = {}): string {
     if (options.valueAdapters) library = {...library, valueAdapters: {...library.valueAdapters, ...options.valueAdapters}}
@@ -110,24 +70,30 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
         throw new Error(`exportToTsx: composition schemaVersion 1 is not accepted by the v3 exporter; call migrateCompositionDocumentV1ToV2(doc) then migrateCompositionDocumentV2ToV3(doc, metadata) first`)
     if (schemaVersion === 2)
         throw new Error(`exportToTsx: composition schemaVersion 2 is not accepted by the v3 exporter; call migrateCompositionDocumentV2ToV3(doc, metadata) first`)
-    if (schemaVersion !== 3 && schemaVersion !== 4)
+    if (schemaVersion !== 3 && schemaVersion !== 4 && schemaVersion !== 5)
         throw new Error(`exportToTsx: unsupported composition schemaVersion: ${String(schemaVersion)}`)
 
     const validation = validateComposition(doc, metadata, library)
     if (!validation.valid) throw new CompositionValidationError(validation.diagnostics)
 
     const exportedComponentName = options.exportedComponentName ?? "ExportedComposition"
-    const callbacksParamName = options.callbacksParamName ?? "callbacks"
     const resolveImportPath = options.resolveImportPath ?? defaultResolveImportPath
+    const declarations = doc.schemaVersion === 5 ? doc.props : {}
 
     const referencedIdentities = new Map<ImportKey, ComponentIdentity>()
     collectInstanceComponentIds(doc.root, referencedIdentities, metadata)
-    const imports = buildImportTable(referencedIdentities, metadata)
+    for (const declaration of Object.values(declarations)) {
+        if (!declaration.typeSource) continue
+        const {key, identity} = instanceImportKeyAndIdentity(declaration.typeSource.componentId, metadata)
+        referencedIdentities.set(key, identity)
+    }
+    if (!isBindingIdentifier(exportedComponentName)) throw new Error(`exportToTsx: invalid exported component name ${JSON.stringify(exportedComponentName)}`)
+    const imports = buildImportTable(referencedIdentities, metadata, new Set([exportedComponentName, "Exclude", "Array", "Date", "URL", "Map", "Set", "RegExp"]))
     const used = new Set([...imports.values()].map(entry => entry.localName))
     used.add(exportedComponentName)
-    used.add(callbacksParamName)
+    const propsParamName = uniqueIdentifier("props", used)
     const factories = new Map<string, ImportEntry>()
-    visitInstanceValues(doc.root, value => {
+    visitInstanceValues([doc.root, ...Object.values(declarations).map(prop => prop.defaultValue)], value => {
         const key = `adapter:${value.adapterId}`
         if (imports.has(key)) return
         const adapter = findValueAdapter(value.adapterId, value.version, library.valueAdapters)
@@ -147,15 +113,32 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
         .sort((a, b) => a.localName.localeCompare(b.localName))
         .map(entry => formatImportStatement(entry, resolveImportPath))
 
-    const bodyJsx = renderInstanceJsx(doc.root, metadata, imports, callbacksParamName)
+    const defaultAssignments: string[] = []
+    const propTypes = Object.entries(declarations).map(([name, declaration]) => {
+        let type: string
+        if (declaration.typeSource) {
+            const entry = imports.get(instanceImportKeyAndIdentity(declaration.typeSource.componentId, metadata).key)
+            if (!entry) throw new Error(`exportToTsx: missing typeSource component import`)
+            type = `import("react").ComponentProps<typeof ${entry.localName}>[${JSON.stringify(declaration.typeSource.propName)}]`
+            if (!schemaFromJson(declaration.schema).verifyConstructType({type: "undefined", value: undefined})) type = `Exclude<${type}, undefined>`
+        } else type = exportSchemaType(declaration.schema, path => resolveImportPath({sourcePath: path} as ComponentMetadata))
+        if (declaration.defaultValue !== undefined) {
+            // Validation already checked defaults against the declared schema. Preserve
+            // literal/tuple types and class parameters that expression inference widens.
+            const expression = `(${serializeValueExpression(declaration.defaultValue, imports, metadata)} as ${type})`
+            defaultAssignments.push(`[${JSON.stringify(name)}]: ${propsParamName}[${JSON.stringify(name)}] === undefined ? ${expression} : ${propsParamName}[${JSON.stringify(name)}]`)
+        }
+        return `${JSON.stringify(name)}${declaration.required && declaration.defaultValue === undefined ? "" : "?"}: ${type}`
+    })
+    const resolvedPropsName = defaultAssignments.length ? uniqueIdentifier("values", used) : propsParamName
+    const bodyJsx = renderInstanceJsx(doc.root, metadata, imports, resolvedPropsName)
 
     const lines = [
         "// Generated by @reactive-forge/runtime's exportToTsx. Do not edit.",
         ...importLines,
         "",
-        `export default function ${exportedComponentName}(`,
-        `    { ${callbacksParamName} }: { ${callbacksParamName}: Record<string, (...args: any[]) => unknown> }`,
-        `) {`,
+        `export default function ${exportedComponentName}(${propTypes.length ? `${propsParamName}: { ${propTypes.join("; ")} }${Object.values(declarations).every(prop => !prop.required || prop.defaultValue !== undefined) ? " = {}" : ""}` : ""}) {`,
+        ...(defaultAssignments.length ? [`    const ${resolvedPropsName} = {...${propsParamName}, ${defaultAssignments.join(", ")}}`] : []),
         `    return (`,
         `        ${bodyJsx}`,
         `    )`,
@@ -216,6 +199,7 @@ function collectSlotItemComponentIds(item: CompositionSlotItem, ids: Map<ImportK
 // contributes nothing (a validated v3 leaf can never contain "element" - section 1.4).
 function collectCompositionValueComponentIds(value: CompositionValue, ids: Map<ImportKey, ComponentIdentity>, metadata: MetadataDocument): void {
     switch (value.kind) {
+        case "prop":
         case "leaf":
             return
         case "componentRef":
@@ -251,7 +235,8 @@ function collectInstanceComponentIds(node: CompositionInstance, ids: Map<ImportK
     const {key, identity} = instanceImportKeyAndIdentity(node.componentId, metadata)
     ids.set(key, identity)
     for (const propValue of Object.values(node.props)) {
-        if (propValue.kind === "callback") continue
+        if (propValue.kind === "callback") throw new Error(`exportToTsx: legacy callback ${JSON.stringify(propValue.name)} cannot be exported; explicitly declare the component prop in a schemaVersion 5 document and bind it with kind: "prop"`)
+        if (propValue.kind === "prop") continue
         collectCompositionValueComponentIds(propValue.value, ids, metadata)
     }
 }
@@ -270,26 +255,32 @@ function baseLocalNameFor(identity: ComponentIdentity, metadata: MetadataDocumen
     return lastSegment !== undefined && lastSegment !== "" ? lastSegment : identity.package
 }
 
-function disambiguatorFor(identity: ComponentIdentity): string {
-    return identity.source === "project" ? identity.id : `${identity.package}_${identity.exportName}`
-}
-
-function buildImportTable(ids: Map<ImportKey, ComponentIdentity>, metadata: MetadataDocument): Map<ImportKey, ImportEntry> {
-    const usedNames = new Set<string>()
+function buildImportTable(ids: Map<ImportKey, ComponentIdentity>, metadata: MetadataDocument, usedNames = new Set<string>()): Map<ImportKey, ImportEntry> {
     const table = new Map<ImportKey, ImportEntry>()
     for (const key of [...ids.keys()].sort()) {
         const identity = ids.get(key)
         if (identity === undefined) continue
         const meta = identity.source === "project" ? findComponentMeta(metadata, identity.id) : undefined
-        let localName = sanitizeIdentifier(baseLocalNameFor(identity, metadata))
-        if (usedNames.has(localName)) localName = sanitizeIdentifier(`${localName}_${disambiguatorFor(identity)}`)
-        usedNames.add(localName)
+        const localName = uniqueIdentifier(sanitizeIdentifier(baseLocalNameFor(identity, metadata)), usedNames)
         table.set(key, {identity, meta, localName})
     }
     return table
 }
 
 const validIdentifierPattern = /^[A-Za-z_$][A-Za-z0-9_$]*$/
+const reservedBindings = new Set("await break case catch class const continue debugger default delete do else enum export extends false finally for function if import in instanceof interface implements let new null package private protected public return static super switch this throw true try typeof var void while with yield eval arguments".split(" "))
+
+function isBindingIdentifier(name: string): boolean {
+    return validIdentifierPattern.test(name) && !reservedBindings.has(name)
+}
+
+function uniqueIdentifier(base: string, used: Set<string>): string {
+    const safe = isBindingIdentifier(base) ? base : `_${base}`
+    let result = safe
+    for (let n = 1; used.has(result); n++) result = `${safe}${String(n)}`
+    used.add(result)
+    return result
+}
 
 function formatImportLine(params: { isDefault: boolean, exportedName: string, localName: string, specifier: string }): string {
     const specifierText = JSON.stringify(params.specifier)
@@ -379,8 +370,8 @@ function serializeValueExpression(value: ValueJson, imports: Map<ImportKey, Impo
     }
 }
 
-function serializeCallbackExpression(name: string, callbacksParamName: string): string {
-    return validIdentifierPattern.test(name) ? `${callbacksParamName}.${name}` : `${callbacksParamName}[${JSON.stringify(name)}]`
+function serializePropBindingExpression(name: string, propsParamName: string): string {
+    return `${propsParamName}[${JSON.stringify(name)}]`
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -389,25 +380,25 @@ function serializeCallbackExpression(name: string, callbacksParamName: string): 
 // (docs/slot-contract-recursive.md section 5).
 // ---------------------------------------------------------------------------------------------
 
-function serializeSlotItemAsExpression(item: CompositionSlotItem, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, callbacksParamName: string): string {
+function serializeSlotItemAsExpression(item: CompositionSlotItem, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, propsParamName: string): string {
     switch (item.kind) {
         case "text":
             return JSON.stringify(item.value)
         case "void":
             return "null"
         case "instance":
-            return renderInstanceJsx(item.instance, metadata, imports, callbacksParamName)
+            return renderInstanceJsx(item.instance, metadata, imports, propsParamName)
     }
 }
 
-function serializeSlotItemAsChild(item: CompositionSlotItem, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, callbacksParamName: string): string {
+function serializeSlotItemAsChild(item: CompositionSlotItem, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, propsParamName: string): string {
     switch (item.kind) {
         case "text":
             return `{${JSON.stringify(item.value)}}`
         case "void":
             return "{null}"
         case "instance":
-            return renderInstanceJsx(item.instance, metadata, imports, callbacksParamName)
+            return renderInstanceJsx(item.instance, metadata, imports, propsParamName)
     }
 }
 
@@ -416,17 +407,17 @@ function serializeSlotValueExpression(
     items: CompositionSlotItem[],
     metadata: MetadataDocument,
     imports: Map<ImportKey, ImportEntry>,
-    callbacksParamName: string
+    propsParamName: string
 ): string {
     const multiple = rule?.slot !== undefined && "multiple" in rule.slot && rule.slot.multiple === true
 
     if (items.length === 1 && !multiple) {
         const only = items[0]
         if (only === undefined) return "null"
-        return serializeSlotItemAsExpression(only, metadata, imports, callbacksParamName)
+        return serializeSlotItemAsExpression(only, metadata, imports, propsParamName)
     }
 
-    const childrenSrc = items.map(item => serializeSlotItemAsChild(item, metadata, imports, callbacksParamName)).join("")
+    const childrenSrc = items.map(item => serializeSlotItemAsChild(item, metadata, imports, propsParamName)).join("")
     return `<>${childrenSrc}</>`
 }
 
@@ -442,9 +433,11 @@ function serializeCompositionValue(
     value: CompositionValue,
     metadata: MetadataDocument,
     imports: Map<ImportKey, ImportEntry>,
-    callbacksParamName: string
+    propsParamName: string
 ): string {
     switch (value.kind) {
+        case "prop":
+            return serializePropBindingExpression(value.name, propsParamName)
         case "leaf":
             return serializeValueExpression(value.value, imports, metadata)
         case "componentRef": {
@@ -454,22 +447,22 @@ function serializeCompositionValue(
         }
         case "nodes": {
             const rule = resolveSlotPolicy(componentMeta, path)
-            return serializeSlotValueExpression(rule, value.value.items, metadata, imports, callbacksParamName)
+            return serializeSlotValueExpression(rule, value.value.items, metadata, imports, propsParamName)
         }
         case "object": {
             const entries = Object.entries(value.fields).map(([key, childValue]) => {
                 const keyText = validIdentifierPattern.test(key) ? key : JSON.stringify(key)
-                return `${keyText}: ${serializeCompositionValue(componentMeta, [...path, key], childValue, metadata, imports, callbacksParamName)}`
+                return `${keyText}: ${serializeCompositionValue(componentMeta, [...path, key], childValue, metadata, imports, propsParamName)}`
             })
             return `{${entries.join(", ")}}`
         }
         case "array": {
             const elements = value.items.map(item =>
-                serializeCompositionValue(componentMeta, [...path, {kind: "each"}], item.value, metadata, imports, callbacksParamName))
+                serializeCompositionValue(componentMeta, [...path, {kind: "each"}], item.value, metadata, imports, propsParamName))
             return `[${elements.join(", ")}]`
         }
         case "variant":
-            return serializeCompositionValue(componentMeta, [...path, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals}], value.value, metadata, imports, callbacksParamName)
+            return serializeCompositionValue(componentMeta, [...path, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals}], value.value, metadata, imports, propsParamName)
     }
 }
 
@@ -485,11 +478,11 @@ function serializePropFragment(
     componentMeta: ComponentMetadata,
     imports: Map<ImportKey, ImportEntry>,
     metadata: MetadataDocument,
-    callbacksParamName: string
+    propsParamName: string
 ): string {
-    const exprText = propValue.kind === "callback"
-        ? serializeCallbackExpression(propValue.name, callbacksParamName)
-        : serializeCompositionValue(componentMeta, [propName], propValue.value, metadata, imports, callbacksParamName)
+    const exprText = propValue.kind === "callback" || propValue.kind === "prop"
+        ? serializePropBindingExpression(propValue.name, propsParamName)
+        : serializeCompositionValue(componentMeta, [propName], propValue.value, metadata, imports, propsParamName)
 
     if (!jsxAttributeNamePattern.test(propName))
         return `{...{ ${JSON.stringify(propName)}: ${exprText} }}`
@@ -505,7 +498,7 @@ function serializePropFragment(
 
 // Components without an explicit children prop remain self-closing. Other node slots
 // remain attributes even when they contain JSX.
-function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, callbacksParamName: string): string {
+function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, propsParamName: string): string {
     const meta = findComponentMeta(metadata, node.componentId)
     const {key} = instanceImportKeyAndIdentity(node.componentId, metadata)
     const entry = imports.get(key)
@@ -513,19 +506,19 @@ function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument
 
     const propFragments = Object.entries(node.props)
         .filter(([name]) => name !== "children")
-        .map(([name, value]) => serializePropFragment(name, value, meta, imports, metadata, callbacksParamName))
+        .map(([name, value]) => serializePropFragment(name, value, meta, imports, metadata, propsParamName))
     const opening = `<${entry.localName}${propFragments.length > 0 ? ` ${propFragments.join(" ")}` : ""}`
     const children = node.props["children"]
     if (children === undefined) return `${opening} />`
     if (children.kind === "composed" && children.value.kind === "nodes") {
         const content = children.value.value.items
-            .map(item => serializeSlotItemAsChild(item, metadata, imports, callbacksParamName))
+            .map(item => serializeSlotItemAsChild(item, metadata, imports, propsParamName))
             .join("")
         return `${opening}>${content}</${entry.localName}>`
     }
-    const expression = children.kind === "callback"
-        ? serializeCallbackExpression(children.name, callbacksParamName)
-        : serializeCompositionValue(meta, ["children"], children.value, metadata, imports, callbacksParamName)
+    const expression = children.kind === "callback" || children.kind === "prop"
+        ? serializePropBindingExpression(children.name, propsParamName)
+        : serializeCompositionValue(meta, ["children"], children.value, metadata, imports, propsParamName)
     const content = expression.startsWith("<") ? expression : `{${expression}}`
     return `${opening}>${content}</${entry.localName}>`
 }

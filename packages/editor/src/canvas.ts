@@ -20,6 +20,8 @@ export interface CompositionEditorProps {
     library: ComponentLibraryData
     onChange: (document: CompositionDocument) => void
     callbacks?: CallbackRegistry
+    /** Preview values for explicitly declared composition props. */
+    props?: Record<string, unknown>
     /** Return a fully initialized instance for components with required props. */
     createInstance?: (component: ComponentMetadata) => CompositionInstance | undefined
     /** Override outlet placement/markup for components with special child or layout semantics. */
@@ -136,7 +138,7 @@ export function CompositionEditor(options: CompositionEditorProps): ReactElement
         if (result.ok) options.onChange(result.document)
     }
     function instance(node: CompositionInstance, path: ValuePath): ReactElement {
-        const rendered = renderComposition({schemaVersion: options.document.schemaVersion, root: node}, options.metadata, options.library, {callbacks: options.callbacks}) as ReactElement<Record<string, unknown>>
+        const rendered = renderComposition({...options.document, root: node}, options.metadata, options.library, {callbacks: options.callbacks, props: options.props}) as ReactElement<Record<string, unknown>>
         const props = {...rendered.props}
         for (const [name, prop] of Object.entries(node.props)) {
             if (prop.kind === "composed") props[name] = decorate(prop.value, props[name], [...path, {kind: "prop", propName: name}])
@@ -155,7 +157,7 @@ export function CompositionEditor(options: CompositionEditorProps): ReactElement
         const element = cloneElement(rendered, props)
         return options.renderComponent ? options.renderComponent({instance: node, path, element, onChange: nextProps => {
             const candidate = updateInstanceAtPath(options.document, path, previous => ({...previous, props: nextProps}))
-            const result = validateComposition(candidate, options.metadata, options.library, options.callbacks)
+            const result = validateComposition(candidate, options.metadata, options.library, options.callbacks, options.props)
             setMessage(result.valid ? "" : result.diagnostics.map(d => d.message).join("; "))
             if (result.valid) options.onChange(candidate)
         }}) : element

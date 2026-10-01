@@ -1,18 +1,16 @@
 import {createElement} from "react"
 import {ControlComponent} from "./types.js"
 
-/**
- * Default control for function-typed props: a `<select>` of the currently
- * available names in the host-supplied `CallbackRegistry` (per the task's
- * explicit requirement - picking a named binding, never typing a function
- * body, consistent with the runtime's callback-reference-only model, see
- * `CompositionPropValue`'s `"callback"` variant). Produces a
- * `{kind: "callback", name}` slot value directly - there is no `ValueJson`
- * for a function, so this is the one control that never calls `commitValue`.
- */
-export const FunctionControl: ControlComponent = ({currentValue, callbacks, onChange}) => {
-    const names = Object.keys(callbacks ?? {})
-    const current = currentValue?.kind === "callback" ? currentValue.name : ""
+/** Bind an explicitly declared function input; callback names are legacy-only. */
+export const FunctionControl: ControlComponent = ({currentValue, callbacks, declaredProps, onChange}) => {
+    const functionLike = (schema: {type: string, [key: string]: unknown}): boolean =>
+        schema.type === "function" || (schema.type === "union" && Array.isArray(schema["types"]) &&
+            schema["types"].some(member => typeof member === "object" && member !== null && "type" in member &&
+                functionLike(member as {type: string, [key: string]: unknown})))
+    const names = declaredProps !== undefined
+        ? Object.entries(declaredProps).filter(([, prop]) => functionLike(prop.schema)).map(([name]) => name)
+        : Object.keys(callbacks ?? {})
+    const current = currentValue?.kind === "callback" || currentValue?.kind === "prop" ? currentValue.name : ""
 
     return createElement("select", {
         "data-control": "function",
@@ -20,7 +18,7 @@ export const FunctionControl: ControlComponent = ({currentValue, callbacks, onCh
         onChange: (event: {target: {value: string}}) => {
             const name = event.target.value
             if (name === "") return
-            onChange({kind: "callback", name})
+            onChange({kind: declaredProps !== undefined ? "prop" : "callback", name})
         }
     }, [
         createElement("option", {key: "", value: ""}, "(none)"),

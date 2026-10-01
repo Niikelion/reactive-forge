@@ -38,6 +38,7 @@ import {
     CompositionSlotItemV2,
     CompositionValue
 } from "./composition.js"
+import {validateDeclarations, validatePropBinding, PropContext} from "./props.js"
 import type {CallbackRegistry} from "./render.js"
 
 // schemaFromJson (used below to turn a PropMetadata.schema back into a real Schema instance)
@@ -157,7 +158,8 @@ function validateNodesValue(
     library: ComponentLibraryData,
     callbacks: CallbackRegistry | undefined,
     diagnosticPath: string,
-    diagnostics: CompositionDiagnostic[]
+    diagnostics: CompositionDiagnostic[],
+    propContext: PropContext
 ): void {
     let nonVoidCount = 0
     items.forEach((item, index) => {
@@ -170,7 +172,7 @@ function validateNodesValue(
         }
         if (item.kind !== "void") nonVoidCount++
         if (item.kind === "instance")
-            validateInstance(item.instance, `${itemPath}.instance`, metadata, library, callbacks, diagnostics)
+            validateInstance(item.instance, `${itemPath}.instance`, metadata, library, callbacks, diagnostics, propContext)
     })
 
     if (rule?.slot !== undefined) {
@@ -194,13 +196,18 @@ function validateCompositionValue(
     library: ComponentLibraryData,
     callbacks: CallbackRegistry | undefined,
     diagnosticPath: string,
-    diagnostics: CompositionDiagnostic[]
+    diagnostics: CompositionDiagnostic[],
+    propContext: PropContext,
+    targetRequired = false
 ): void {
     if ((value as {kind: string}).kind === "richText") {
         diagnostics.push({severity: "error", code: "legacy-rich-text-requires-host-conversion", message: "Convert legacy richText to a registered host component", path: diagnosticPath})
         return
     }
     switch (value.kind) {
+        case "prop":
+            validatePropBinding(value.name, schema, componentMeta, path, diagnosticPath, metadata, library, diagnostics, propContext, targetRequired)
+            return
         case "leaf": {
             const rule = resolveSlotPolicy(componentMeta, path)
             if (rule?.slot !== undefined) {
@@ -226,7 +233,7 @@ function validateCompositionValue(
                 return
             }
             if (value.kind === "nodes") {
-                validateNodesValue(rule, value.value.items, metadata, library, callbacks, diagnosticPath, diagnostics)
+                validateNodesValue(rule, value.value.items, metadata, library, callbacks, diagnosticPath, diagnostics, propContext)
                 return
             }
             const candidate: ComponentIdentity = value.value
@@ -247,7 +254,7 @@ function validateCompositionValue(
                     diagnostics.push({severity: "error", code: childSchema.code, message: childSchema.message, path: `${diagnosticPath}.${key}`})
                     continue
                 }
-                validateCompositionValue(componentMeta, [...path, key], childSchema, childValue, metadata, library, callbacks, `${diagnosticPath}.${key}`, diagnostics)
+                validateCompositionValue(componentMeta, [...path, key], childSchema, childValue, metadata, library, callbacks, `${diagnosticPath}.${key}`, diagnostics, propContext, stripped.properties[key]?.required ?? false)
             }
             for (const [key, propSchema] of Object.entries(stripped.properties)) {
                 if (key in value.fields) continue
@@ -282,7 +289,7 @@ function validateCompositionValue(
                 return
             }
             value.items.forEach((item, index) => {
-                validateCompositionValue(componentMeta, [...path, {kind: "each"}], elementSchema, item.value, metadata, library, callbacks, `${diagnosticPath}.items[${String(index)}]`, diagnostics)
+                validateCompositionValue(componentMeta, [...path, {kind: "each"}], elementSchema, item.value, metadata, library, callbacks, `${diagnosticPath}.items[${String(index)}]`, diagnostics, propContext)
             })
             return
         }
@@ -297,7 +304,7 @@ function validateCompositionValue(
                 diagnostics.push({severity: "error", code: memberSchema.code, message: memberSchema.message, path: diagnosticPath})
                 return
             }
-            validateCompositionValue(componentMeta, [...path, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals}], memberSchema, value.value, metadata, library, callbacks, diagnosticPath, diagnostics)
+            validateCompositionValue(componentMeta, [...path, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals}], memberSchema, value.value, metadata, library, callbacks, diagnosticPath, diagnostics, propContext)
             return
         }
     }
@@ -316,7 +323,8 @@ function validateInstance(
     metadata: MetadataDocument,
     library: ComponentLibraryData,
     callbacks: CallbackRegistry | undefined,
-    diagnostics: CompositionDiagnostic[]
+    diagnostics: CompositionDiagnostic[],
+    propContext: PropContext
 ): void {
     const componentMeta = findMetadata(metadata, node.componentId)
     if (componentMeta === undefined) {
@@ -356,7 +364,15 @@ function validateInstance(
             continue
         }
 
+        if (provided.kind === "prop") {
+            validatePropBinding(provided.name, schemaFromJson(propMeta.schema), componentMeta, [propName], propPath, metadata, library, diagnostics, propContext, propMeta.required)
+            continue
+        }
         if (provided.kind === "callback") {
+            if (propContext.document.schemaVersion === 5) {
+                diagnostics.push({severity: "error", code: "legacy-callback-binding", message: "Version 5 callbacks must reference an explicitly declared function prop using kind: prop", path: propPath})
+                continue
+            }
             if (!isFunctionLike(propMeta.schema)) {
                 diagnostics.push({severity: "error", code: "callback-for-non-function-prop", message: `Prop "${propName}" is not function-typed and cannot take a callback reference`, path: propPath})
                 continue
@@ -368,7 +384,7 @@ function validateInstance(
 
         // provided.kind === "composed"
         const schema = schemaFromJson(propMeta.schema)
-        validateCompositionValue(componentMeta, [propName], schema, provided.value, metadata, library, callbacks, propPath, diagnostics)
+        validateCompositionValue(componentMeta, [propName], schema, provided.value, metadata, library, callbacks, propPath, diagnostics, propContext, propMeta.required)
     }
 
     for (const propName of Object.keys(node.props)) {
@@ -424,9 +440,15 @@ export function validateComposition(
     doc: CompositionDocument | CompositionDocumentV2 | CompositionDocumentV1,
     metadata: MetadataDocument,
     library: ComponentLibraryData,
-    callbacks?: CallbackRegistry
+    callbacks?: CallbackRegistry,
+    props?: Record<string, unknown>
 ): ValidationResult {
     const diagnostics: CompositionDiagnostic[] = []
+    const input: unknown = doc
+    if (typeof input !== "object" || input === null) {
+        diagnostics.push({severity: "error", code: "invalid-composition-shape", message: "Composition document must be an object", path: "root"})
+        return {valid: false, diagnostics}
+    }
     const schemaVersion: number = doc.schemaVersion
     if (schemaVersion === 1) {
         diagnostics.push({severity: "error", code: "unsupported-schema-version", message: `Composition schemaVersion 1 is not accepted by v3 APIs; call migrateCompositionDocumentV1ToV2(doc) then migrateCompositionDocumentV2ToV3(doc, metadata) first`, path: "root"})
@@ -436,15 +458,21 @@ export function validateComposition(
         diagnostics.push({severity: "error", code: "unsupported-schema-version", message: `Composition schemaVersion 2 is not accepted by v3 APIs; call migrateCompositionDocumentV2ToV3(doc, metadata) first`, path: "root"})
         return {valid: false, diagnostics}
     }
-    if (schemaVersion !== 3 && schemaVersion !== 4) {
+    if (schemaVersion !== 3 && schemaVersion !== 4 && schemaVersion !== 5) {
         diagnostics.push({severity: "error", code: "unsupported-schema-version", message: `Unsupported composition schemaVersion: ${String(schemaVersion)}`, path: "root"})
         return {valid: false, diagnostics}
     }
     if (schemaVersion === 3) visitInstanceValues(doc.root, () => {
         diagnostics.push({severity: "error", code: "unsupported-schema-version", message: "Class values require composition schemaVersion 4", path: "root"})
     })
-    validateIdentities((doc as CompositionDocument).root, diagnostics)
-    validateInstance((doc as CompositionDocument).root, "root", metadata, library, callbacks, diagnostics)
+    const propContext: PropContext = {document: doc as CompositionDocument, supplied: props}
+    try {
+        validateDeclarations(propContext, metadata, library, diagnostics)
+        validateIdentities((doc as CompositionDocument).root, diagnostics)
+        validateInstance((doc as CompositionDocument).root, "root", metadata, library, callbacks, diagnostics, propContext)
+    } catch (error) {
+        diagnostics.push({severity: "error", code: "invalid-composition-shape", message: error instanceof Error ? error.message : String(error), path: "root"})
+    }
     return {valid: !diagnostics.some(d => d.severity === "error"), diagnostics}
 }
 

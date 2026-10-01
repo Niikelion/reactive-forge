@@ -21,13 +21,13 @@ function memberSchemas(schema: SchemaJson): SchemaJson[] {
  * applies to a `string` member nested inside a union).
  */
 export const UnionControl: ControlComponent = (props) => {
-    const {schema, currentValue, editorHints, callbacks, controls, onChange} = props
+    const {schema, currentValue, editorHints, callbacks, declaredProps, controls, onChange} = props
     const members = memberSchemas(schema)
     const currentLeafType = currentValue?.kind === "composed" && currentValue.value.kind === "leaf"
         ? currentValue.value.value.type
         : undefined
     const matches = (member: SchemaJson): boolean => {
-        if (currentValue?.kind === "callback") return member.type === "function"
+        if (currentValue?.kind === "callback" || currentValue?.kind === "prop") return member.type === "function"
         if (currentValue?.kind !== "composed" || currentValue.value.kind !== "leaf") return false
         try { fromValueJson(schemaFromJson(member), currentValue.value.value); return true } catch { return false }
     }
@@ -39,7 +39,7 @@ export const UnionControl: ControlComponent = (props) => {
     const Sub = pickControl(activeMember.type, editorHints, controls)
     const nestedCurrent =
         (currentLeafType === activeMember.type && matches(activeMember)) ||
-        (currentValue?.kind === "callback" && activeMember.type === "function")
+        ((currentValue?.kind === "callback" || currentValue?.kind === "prop") && activeMember.type === "function")
             ? currentValue
             : undefined
 
@@ -60,6 +60,7 @@ export const UnionControl: ControlComponent = (props) => {
             exampleValue: example,
             editorHints,
             callbacks,
+            declaredProps,
             controls,
             onChange
         })

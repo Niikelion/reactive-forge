@@ -1,7 +1,7 @@
 import {createElement, FC} from "react"
 import {PropMetadata} from "@reactive-forge/schema"
 import {CallbackRegistry} from "@reactive-forge/runtime"
-import {ControlComponent, ControlOverrides, ControlPropValue} from "./types.js"
+import {ControlComponent, ControlOverrides, ControlProps, ControlPropValue} from "./types.js"
 import {NotEditableControl} from "./NotEditableControl.js"
 import {NullControl} from "./NullControl.js"
 import {StringControl} from "./StringControl.js"
@@ -73,6 +73,7 @@ export interface PropControlProps {
     propMeta: PropMetadata
     currentValue: ControlPropValue | undefined
     callbacks?: CallbackRegistry
+    declaredProps?: ControlProps["declaredProps"]
     controls?: ControlOverrides
     onChange: (value: ControlPropValue) => void
 }
@@ -83,7 +84,7 @@ export interface PropControlProps {
  * `exampleValue`/`editorHints` are available - see `ControlProps`'s doc
  * comment on why nested/member controls only get a bare schema).
  */
-export const PropControl: FC<PropControlProps> = ({propMeta, currentValue, callbacks, controls, onChange}) => {
+export const PropControl: FC<PropControlProps> = ({propMeta, currentValue, callbacks, declaredProps, controls, onChange}) => {
     const Control = pickControl(propMeta.schema.type, propMeta.editorHints, controls)
     return createElement(Control, {
         schema: propMeta.schema,
@@ -92,6 +93,7 @@ export const PropControl: FC<PropControlProps> = ({propMeta, currentValue, callb
         exampleValue: propMeta.exampleValue,
         editorHints: propMeta.editorHints,
         callbacks,
+        declaredProps,
         controls,
         onChange
     })

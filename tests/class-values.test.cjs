@@ -115,7 +115,7 @@ test('TSX export compiles and renders the same class values as preview',async()=
   const m={exports:{}};
   new Function('require','module','exports',result.outputFiles[0].text)(require,m,m.exports);
   const React=require('react');
-  assert.equal(renderToStaticMarkup(React.createElement(m.exports.default,{callbacks:{}})),renderToStaticMarkup(runtime.renderComposition(document,metadata,library)));
+  assert.equal(renderToStaticMarkup(React.createElement(m.exports.default)),renderToStaticMarkup(runtime.renderComposition(document,metadata,library)));
 });
 test('generated registry includes adapter dependencies and metadata version 3',async()=>{
   const outDir=await fs.mkdtemp(path.join(root,'.cache-forge-test-classes-'));
@@ -154,7 +154,7 @@ test('Map, Set and RegExp extract, serialize, reconstruct and export with generi
   const source=runtime.exportToTsx(doc,md,lib);
   const result=await require('esbuild').build({stdin:{contents:source,loader:'tsx',resolveDir:path.dirname(file)},jsx:'automatic',bundle:true,write:false,platform:'node',format:'cjs',external:['react','@reactive-forge/runtime']});
   const m={exports:{}};new Function('require','module','exports',result.outputFiles[0].text)(require,m,m.exports);
-  assert.equal(renderToStaticMarkup(require('react').createElement(m.exports.default,{callbacks:{}})),renderToStaticMarkup(element));
+  assert.equal(renderToStaticMarkup(require('react').createElement(m.exports.default)),renderToStaticMarkup(element));
   const mapSchema=schema.schemaFromJson(props.prices.schema);
   assert.throws(()=>runtime.encodeAdapterValue(mapSchema,new Map([[1,new Money(1,'EUR')]]),library.valueAdapters));
   assert.throws(()=>runtime.encodeAdapterValue(schema.schemaFromJson(props.tags.schema),new Set([1])));
