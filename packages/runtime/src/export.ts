@@ -51,7 +51,7 @@ import {CompositionValidationError} from "./render.js"
 //    called - with an import added for the referenced ComponentIdentity (project or external).
 //
 // `children` stays an ordinary composition prop, but is emitted between the JSX tags.
-// Its serialized expression preserves the runtime's Fragment/array/value boundaries.
+// Node-slot children are emitted directly; other slot props retain their Fragment boundaries.
 //
 // `collectValueComponentIds`'s old v2 "element" case is DELETED ENTIRELY (not merely dead-code-
 // unreachable): a v3 "leaf" CompositionValue can never contain a legacy "element" node at all
@@ -517,6 +517,12 @@ function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument
     const opening = `<${entry.localName}${propFragments.length > 0 ? ` ${propFragments.join(" ")}` : ""}`
     const children = node.props["children"]
     if (children === undefined) return `${opening} />`
+    if (children.kind === "composed" && children.value.kind === "nodes") {
+        const content = children.value.value.items
+            .map(item => serializeSlotItemAsChild(item, metadata, imports, callbacksParamName))
+            .join("")
+        return `${opening}>${content}</${entry.localName}>`
+    }
     const expression = children.kind === "callback"
         ? serializeCallbackExpression(children.name, callbacksParamName)
         : serializeCompositionValue(meta, ["children"], children.value, metadata, imports, callbacksParamName)

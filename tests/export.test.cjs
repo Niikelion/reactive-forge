@@ -205,7 +205,7 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     assert.match(tsxSource, /onActivate=\{callbacks\.onShowcaseActivate\}/);
     assert.doesNotMatch(tsxSource, /=>\s*\{/, 'no fabricated function body is ever emitted for a callback reference');
     assert.doesNotMatch(tsxSource, /\bchildren=/, 'children never emits as a JSX attribute');
-    assert.match(tsxSource, /<Card[^>]*><>\{"Intro: "\}<Greeter[^]*?\{null\}<ExportShowcase/, 'children renders inside Card in its original order');
+    assert.match(tsxSource, /<Card[^>]*>\{"Intro: "\}<Greeter[^]*?\{null\}<ExportShowcase/, 'children renders directly inside Card in its original order');
     assert.match(tsxSource, /<\/Card>/, 'Card has a closing tag');
     fs.writeFileSync(exportedFilePath, tsxSource, 'utf8');
 
@@ -241,6 +241,9 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
       assert.doesNotMatch(source, /\bchildren=/);
       if (children === undefined) assert.match(source, /<Card title="Export Proof" \/>/);
       else assert.match(source, /<Card title="Export Proof">[^]*<\/Card>/);
+      if (name === 'empty') assert.match(source, /<Card title="Export Proof"><\/Card>/);
+      if (name === 'instance') assert.match(source, /<Card title="Export Proof"><Greeter/);
+      assert.doesNotMatch(source, /<>|<\/>/, 'children do not add a Fragment wrapper');
       const file = path.join(scratchDir, `Children-${name}.tsx`);
       fs.writeFileSync(file, source);
       compileTsx([file]);
