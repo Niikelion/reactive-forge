@@ -1,5 +1,12 @@
 # @reactive-forge/editor
 
+## 2.2.0
+
+### Patch Changes
+
+- @reactive-forge/schema@2.2.0
+- @reactive-forge/runtime@2.2.0
+
 ## 2.1.0
 
 ### Minor Changes
