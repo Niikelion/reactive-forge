@@ -1,5 +1,5 @@
 {
-  "name": "@reactive-forge/codegen",
+  "name": "@reactive-forge/next",
   "version": "2.1.0",
   "license": "MIT",
   "type": "module",
@@ -11,7 +11,7 @@
     "package.json"
   ],
   "bin": {
-    "forge": "./dist/bin.js"
+    "forge-next": "./dist/bin.js"
   },
   "exports": {
     "import": {
@@ -28,20 +28,7 @@
     "build": "tsdown && attw --pack ."
   },
   "dependencies": {
-    "@commander-js/extra-typings": "^13.1.0",
-    "@reactive-forge/schema": "2.1.0",
-    "@types/prompts": "^2.4.9",
-    "chokidar": "^4.0.3",
-    "commander": "^13.1.0",
-    "dedent": "^1.5.3",
-    "esbuild": "^0.28.2",
-    "kleur": "^4.1.5",
-    "load-config-ts": "^0.1.0",
-    "prompts": "^2.4.2",
-    "semver": "^7.6.3",
-    "ts-morph": ">=25.0.1",
-    "ts-node": ">=10.9.2",
-    "typescript": "5.5.4"
+    "@reactive-forge/codegen": "2.1.0"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.17.3",
@@ -50,9 +37,21 @@
     "@reactive-forge/eslint-config": "0.1.0",
     "@types/node": ">=22.13.4",
     "@types/react": "^19.0.0",
-    "@types/semver": "^7.5.8",
     "eslint": "^9.14.0",
-    "react": "^19.0.0"
+    "next": "^16.3.8",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "peerDependencies": {
+    "@types/react": "^19.0.0",
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@types/react": {
+      "optional": true
+    }
   },
   "publishConfig": {
     "access": "public"
@@ -60,15 +59,6 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Niikelion/reactive-forge.git",
-    "directory": "packages/codegen"
-  },
-  "peerDependencies": {
-    "@types/react": "^19.0.0",
-    "react": "^19.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@types/react": {
-      "optional": true
-    }
+    "directory": "packages/next"
   }
 }

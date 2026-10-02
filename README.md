@@ -8,8 +8,10 @@ Extract exported React components into portable prop metadata and a component re
 - [schema](packages/schema/README.md): portable schemas, slot policies and prop presentation.
 - [runtime](packages/runtime/README.md): validation, rendering, class adapters and TSX export.
 - [editor](packages/editor/README.md): preview, prop controls and nested composition canvas.
+- [vite](packages/vite/README.md): extraction during Vite development and production builds.
+- [next](packages/next/README.md): generation and development watching for Next.js with Turbopack or Webpack.
 
-The coordinated 2.0.1 release is published; see [CHANGELOG.md](CHANGELOG.md). Package versions are separate from document schema versions.
+See [CHANGELOG.md](CHANGELOG.md) and package changelogs for released versions. Package versions are separate from document schema versions.
 
 React is supplied by the host application. All stable React 19.x versions are supported (`^19.0.0`); TypeScript users supply matching React 19 types. CI verifies the React 19.0 baseline and the latest React 19.x release.
 
@@ -31,4 +33,4 @@ Class payloads are trees: cycles and shared reference identity are not preserved
 
 ## Releases
 
-Run `yarn changeset` for public package changes and commit the generated file with your code. Merging into `master` verifies the packages, bumps all four public package versions together, publishes them to npm, and creates GitHub releases. CI and documentation-only changes need no version bump. See [.changeset/README.md](.changeset/README.md) for setup and recovery.
+Run `yarn changeset` for public package changes and commit the generated file with your code. Merging into `master` verifies the packages, bumps all six public package versions together, publishes them to npm, and creates GitHub releases. CI and documentation-only changes need no version bump. See [.changeset/README.md](.changeset/README.md) for setup and recovery.

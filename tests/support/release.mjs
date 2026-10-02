@@ -3,7 +3,7 @@ import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const releasePackages = ['schema', 'runtime', 'editor', 'codegen'];
+export const releasePackages = ['schema', 'runtime', 'editor', 'codegen', 'vite', 'next'];
 
 /** Only an explicit registry E404 means it is safe to publish a version. */
 export function registryVersionState(result, expectedVersion) {

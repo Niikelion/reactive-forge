@@ -2,7 +2,7 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
   "changelog": "@changesets/cli/changelog",
   "commit": false,
-  "fixed": [["@reactive-forge/schema", "@reactive-forge/runtime", "@reactive-forge/editor", "@reactive-forge/codegen"]],
+  "fixed": [["@reactive-forge/schema", "@reactive-forge/runtime", "@reactive-forge/editor", "@reactive-forge/codegen", "@reactive-forge/vite", "@reactive-forge/next"]],
   "linked": [],
   "access": "public",
   "baseBranch": "master",

@@ -28,4 +28,22 @@ Use `each()` for array entries and `variant()` for union branches. Static group 
 
 The former `richText` policy is rejected with a migration diagnostic. Use ordinary component groups and host-owned content components instead.
 
+Framework adapters use the shared generation service:
+
+```ts
+import {createGenerationService} from "@reactive-forge/codegen"
+
+const service = await createGenerationService({}, {projectRootDir: process.cwd()})
+await service.generate()
+await service.watch()
+// On framework shutdown:
+await service.close()
+```
+
+The service discovers `forge.config.ts`, resolves its paths relative to that file, and lets inline config override file values. Set `configFile: false` to disable discovery or give an explicit path to require that config file. Frameworks can supply `defaultTsConfigFilePath`, which applies only when no config file or inline config selects a TypeScript configuration.
+
+Each generation builds a fresh TypeScript project. Changes, additions, deletions, annotations, imported config modules and TypeScript configuration dependencies trigger regeneration. Generated output, dependency directories and framework build output do not feed back into generation. Watch errors go to `onError` and later edits can recover; initial `generate()` errors reject its promise so builds fail visibly. Watchers do not keep a finished build process running.
+
+Adapters that already own a file watcher can add `service.watchPaths`, call `service.invalidate(file)` on relevant events, and refresh watched paths from `onGenerated`. `invalidate` debounces changes; `flush()` awaits pending work. `close()` cancels queued work and waits for active generation.
+
 See [Reactive Forge](https://github.com/Niikelion/reactive-forge).

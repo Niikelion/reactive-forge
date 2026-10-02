@@ -11,6 +11,8 @@ const packages = [
   '@reactive-forge/runtime',
   '@reactive-forge/editor',
   '@reactive-forge/codegen',
+  '@reactive-forge/vite',
+  '@reactive-forge/next',
   '@reactive-forge/eslint-config',
 ];
 const errors = [];
@@ -63,9 +65,13 @@ const binPath = resolve(root, 'packages/codegen', codegenManifest.bin.forge);
 const help = spawnSync(process.execPath, [binPath, '--help'], { cwd: root, encoding: 'utf8' });
 check(!help.error && help.status === 0, `@reactive-forge/codegen forge --help failed${help.error ? `: ${help.error.message}` : ` (exit ${help.status})`}`);
 
+const nextManifest = JSON.parse(readFileSync(resolve(root, 'packages/next/package.json'), 'utf8'));
+const nextHelp = spawnSync(process.execPath, [resolve(root, 'packages/next', nextManifest.bin['forge-next']), '--help'], { cwd: root, encoding: 'utf8' });
+check(!nextHelp.error && nextHelp.status === 0 && nextHelp.stdout.includes('forge-next'), '@reactive-forge/next forge-next --help failed');
+
 if (errors.length) {
   for (const error of errors) console.error(`FAIL ${error}`);
   process.exitCode = 1;
 } else {
-  console.log(`Package exports OK: ${packages.join(', ')}; forge --help`);
+  console.log(`Package exports OK: ${packages.join(', ')}; forge --help; forge-next --help`);
 }

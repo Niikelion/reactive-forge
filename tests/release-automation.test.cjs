@@ -14,7 +14,7 @@ test('release lookup only treats npm E404 as an unpublished version', async () =
 
 test('release notes select only the current package version', async () => {
   const { releaseNotes, releasePackages } = await import('./support/release.mjs');
-  assert.deepEqual(releasePackages, ['schema', 'runtime', 'editor', 'codegen']);
+  assert.deepEqual(releasePackages, ['schema', 'runtime', 'editor', 'codegen', 'vite', 'next']);
   assert.equal(releaseNotes('# Changes\n\n## 2.1.0\n\nNew slots.\n\n## 2.0.1\n\nPrevious.', '2.1.0', 'schema'), 'New slots.');
   assert.match(releaseNotes('', '2.0.1', 'schema'), /schema 2\.0\.1/);
 });
@@ -23,6 +23,7 @@ test('Changesets gate permits infrastructure/docs and requires releases for pack
   const { changedReleasePackages, assertChangesetsCoverChanges } = await import('./support/release-changeset.mjs');
   assert.deepEqual(changedReleasePackages(['.github/workflows/release.yml', 'tests/example.test.cjs', 'packages/schema/README.md', 'packages/eslint-config/index.js']), []);
   assert.deepEqual(changedReleasePackages(['packages/schema/src/index.ts', 'packages/runtime/package.json']), ['schema', 'runtime']);
+  assert.deepEqual(changedReleasePackages(['packages/vite/src/index.ts', 'packages/next/package.json']), ['vite', 'next']);
   assert.throws(() => assertChangesetsCoverChanges(['schema', 'runtime'], [{ name: '@reactive-forge/schema' }]), /@reactive-forge\/runtime/);
   assert.doesNotThrow(() => assertChangesetsCoverChanges(['schema'], [{ name: '@reactive-forge/schema' }]));
 });

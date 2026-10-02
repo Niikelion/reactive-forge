@@ -8,6 +8,8 @@ import type {AnnotationSourcesConfig} from "./slotTypes.js";
 
 export type {AnnotationSourcesConfig} from "./slotTypes.js";
 export type {ClassBinding} from "./classBindings.js";
+export {createGenerationService} from "./integrations.js";
+export type {GenerationService, GenerationServiceOptions} from "./integrations.js";
 export {defineComponentMetadata, defineLibraryMetadata, externalComponent, each, variant, defineComponentGroup, Text, RichText} from "./slotAuthoring.js";
 export type {AuthorSlotRule, AuthorSlotPolicy, AuthorComponentReference, ExternalComponentRef} from "./slotAuthoring.js";
 
@@ -71,7 +73,12 @@ export function fillConfig(config: ForgeConfig, projectRootDir = "./"): CodegenC
     }
 }
 
-export const createCodegen = async (config: CodegenConfig, logger?: ReturnType<typeof createLogger>) => {
+export interface CodegenHooks {
+    /** Source dependencies discovered by TypeScript, for framework watcher integration. */
+    onSourceFiles?: (files: string[]) => void
+}
+
+export const createCodegen = async (config: CodegenConfig, logger?: ReturnType<typeof createLogger>, hooks?: CodegenHooks) => {
     logger ??= createLogger({ silent: false, prefix: true })
 
     registerCommonSchemas()
@@ -95,5 +102,6 @@ export const createCodegen = async (config: CodegenConfig, logger?: ReturnType<t
     const logFinished = logger.timing("Extracted components", true)
     const components = extractComponents(project, config.componentRoots, config)
     await generateFiles(project, components, config, logger)
+    hooks?.onSourceFiles?.(project.getSourceFiles().map(file => file.getFilePath()))
     logFinished()
 }
