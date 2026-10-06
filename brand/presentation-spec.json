@@ -1,0 +1,34 @@
+{
+  "brand": "Reactive Forge",
+  "tagline": "Forge React components into compositions",
+  "brief": "Reactive Forge extracts React components into portable metadata, lets people compose them visually and exports the result to TSX. The mark should feel precise, structural and crafted, and avoid the React atom, </> brackets and flames.",
+  "adjectives": ["precise", "structural", "crafted", "developer-first"],
+  "criteria": "Success: reads as an anvil at 16 px, carries a quiet JSX hint, works in one colour and reversed.",
+  "industry": "software",
+  "nav": ["Docs", "Packages", "GitHub"],
+  "brand_color": "#149ECA",
+  "tile_color": "#16181D",
+  "greyscale": false,
+  "designer": "Reactive Forge",
+  "round": 2,
+  "concepts": [
+    {
+      "name": "Self-closing anvil",
+      "symbol": "symbol.svg",
+      "lockup": "logo-horizontal.svg",
+      "stacked": "logo-stacked.svg",
+      "symbol_on_tile": "symbol-reversed.svg",
+      "symbol_on_dark": "symbol-reversed.svg",
+      "lockup_on_dark": "logo-horizontal-reversed.svg",
+      "stacked_on_dark": "logo-stacked-reversed.svg",
+      "idea": "A blocky anvil whose slanted slot and pointed heel spell />, the end of a React component tag.",
+      "rationale": [
+        "Forge without the hammer-and-flame cliché",
+        "The cyan slash is a component slotted into the anvil",
+        "One angle language: 45° heel and base, 60° slot"
+      ]
+    }
+  ],
+  "recommendation": "Self-closing anvil: ownable, legible at 16 px, and the /> hint rewards a second look without needing explanation.",
+  "next_steps": ["Approve final artwork", "Add favicon set to the docs site", "Trademark search before wider use"]
+}
