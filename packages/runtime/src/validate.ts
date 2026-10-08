@@ -36,9 +36,12 @@ import {
     CompositionPropValueV2,
     CompositionSlotItem,
     CompositionSlotItemV2,
-    CompositionValue
+    CompositionExpression,
+    CompositionValue,
+    declaresProps
 } from "./composition.js"
-import {validateDeclarations, validatePropBinding, PropContext} from "./props.js"
+import {assignable, validateDeclarations, validatePropBinding, PropContext} from "./props.js"
+import {ExpressionError, expressionSchema, orderLocals, TypeScope} from "./expressions.js"
 import type {CallbackRegistry} from "./render.js"
 
 // schemaFromJson (used below to turn a PropMetadata.schema back into a real Schema instance)
@@ -293,6 +296,24 @@ function validateCompositionValue(
             })
             return
         }
+        case "expression": {
+            if (propContext.document.schemaVersion !== 6) {
+                diagnostics.push({severity: "error", code: "unsupported-schema-version", message: "Expressions require composition schemaVersion 6", path: diagnosticPath})
+                return
+            }
+            // In a slot, an expression can only be text: a slot that accepts anything takes a string or number.
+            const rule = resolveSlotPolicy(componentMeta, path)
+            if (rule?.slot !== undefined && rule.slot.kind !== "any") {
+                diagnostics.push({severity: "error", code: "slot-domain-path-not-composed", message: `An expression cannot fill a "${rule.slot.kind}" slot`, path: diagnosticPath})
+                return
+            }
+            if (rule?.slot !== undefined) {
+                validateExpression(value.expression, schemaFromJson({type: "union", types: [{type: "string"}, {type: "number"}, {type: "null"}, {type: "undefined"}]}), propContext, diagnosticPath, diagnostics)
+                return
+            }
+            validateExpression(value.expression, schema, propContext, diagnosticPath, diagnostics)
+            return
+        }
         case "variant": {
             const stripped = stripNullish(schema)
             if (!(stripped instanceof UnionSchema)) {
@@ -306,6 +327,55 @@ function validateCompositionValue(
             }
             validateCompositionValue(componentMeta, [...path, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals}], memberSchema, value.value, metadata, library, callbacks, diagnosticPath, diagnostics, propContext)
             return
+        }
+    }
+}
+
+function typeScope(propContext: PropContext): TypeScope {
+    const declarations = declaresProps(propContext.document) ? propContext.document.props : {}
+    return {
+        prop: name => Object.hasOwn(declarations, name) ? declarations[name] : undefined,
+        local: name => propContext.locals?.get(name),
+        function: name => propContext.functions && Object.hasOwn(propContext.functions, name) ? propContext.functions[name] : undefined,
+    }
+}
+
+/** An expression is well typed and its type fits the position it fills. */
+function validateExpression(expression: CompositionExpression, target: Schema, propContext: PropContext, diagnosticPath: string, diagnostics: CompositionDiagnostic[]): void {
+    try {
+        const produced = expressionSchema(expression, typeScope(propContext))
+        if (!assignable(produced, target))
+            diagnostics.push({severity: "error", code: "incompatible-expression", message: "The expression's value does not fit this position", path: diagnosticPath})
+    } catch (error) {
+        diagnostics.push({severity: "error", code: error instanceof ExpressionError ? error.code : "invalid-expression", message: error instanceof Error ? error.message : String(error), path: diagnosticPath})
+    }
+}
+
+/** Types each local in dependency order. A local that does not type is reported, and left out so its users report it too. */
+function validateLocals(propContext: PropContext, diagnostics: CompositionDiagnostic[]): void {
+    const document = propContext.document
+    propContext.locals = new Map()
+    if (document.schemaVersion !== 6 || document.locals === undefined) return
+    const locals = document.locals
+    // Documents arrive as JSON, so the declared type is not a guarantee.
+    const raw: unknown = locals
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        diagnostics.push({severity: "error", code: "invalid-locals", message: "Locals must be a record of named expressions", path: "locals"})
+        return
+    }
+    let order: string[]
+    try { order = orderLocals(locals) } catch (error) {
+        diagnostics.push({severity: "error", code: error instanceof ExpressionError ? error.code : "invalid-locals", message: error instanceof Error ? error.message : String(error), path: "locals"})
+        return
+    }
+    for (const name of order) {
+        if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
+            diagnostics.push({severity: "error", code: "invalid-local-name", message: `Local "${name}" must be a plain identifier`, path: `locals.${name}`})
+            continue
+        }
+        try { propContext.locals.set(name, expressionSchema((locals[name] as {expression: CompositionExpression}).expression, typeScope(propContext))) }
+        catch (error) {
+            diagnostics.push({severity: "error", code: error instanceof ExpressionError ? error.code : "invalid-expression", message: error instanceof Error ? error.message : String(error), path: `locals.${name}`})
         }
     }
 }
@@ -369,7 +439,7 @@ function validateInstance(
             continue
         }
         if (provided.kind === "callback") {
-            if (propContext.document.schemaVersion === 5) {
+            if (declaresProps(propContext.document)) {
                 diagnostics.push({severity: "error", code: "legacy-callback-binding", message: "Version 5 callbacks must reference an explicitly declared function prop using kind: prop", path: propPath})
                 continue
             }
@@ -458,16 +528,17 @@ export function validateComposition(
         diagnostics.push({severity: "error", code: "unsupported-schema-version", message: `Composition schemaVersion 2 is not accepted by v3 APIs; call migrateCompositionDocumentV2ToV3(doc, metadata) first`, path: "root"})
         return {valid: false, diagnostics}
     }
-    if (schemaVersion !== 3 && schemaVersion !== 4 && schemaVersion !== 5) {
+    if (schemaVersion !== 3 && schemaVersion !== 4 && schemaVersion !== 5 && schemaVersion !== 6) {
         diagnostics.push({severity: "error", code: "unsupported-schema-version", message: `Unsupported composition schemaVersion: ${String(schemaVersion)}`, path: "root"})
         return {valid: false, diagnostics}
     }
     if (schemaVersion === 3) visitInstanceValues(doc.root, () => {
         diagnostics.push({severity: "error", code: "unsupported-schema-version", message: "Class values require composition schemaVersion 4", path: "root"})
     })
-    const propContext: PropContext = {document: doc as CompositionDocument, supplied: props}
+    const propContext: PropContext = {document: doc as CompositionDocument, supplied: props, functions: library.functions}
     try {
         validateDeclarations(propContext, metadata, library, diagnostics)
+        validateLocals(propContext, diagnostics)
         validateIdentities((doc as CompositionDocument).root, diagnostics)
         validateInstance((doc as CompositionDocument).root, "root", metadata, library, callbacks, diagnostics, propContext)
     } catch (error) {

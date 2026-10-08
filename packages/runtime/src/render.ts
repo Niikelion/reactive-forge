@@ -24,6 +24,7 @@ import {CompositionDiagnostic, validateComposition} from "./validate.js"
 import {resolveCompositionProps} from "./props.js"
 import {decodeAdapterValue} from "./adapters.js"
 import {toValueJson} from "@reactive-forge/schema"
+import {evaluateExpression, evaluateLocals, EvaluationScope} from "./expressions.js"
 
 /**
  * Host-supplied bindings a rendered composition's `"callback"` prop values resolve against. Never
@@ -104,14 +105,14 @@ function constructToJs(construct: ValueConstruct, metadata: MetadataDocument, li
     }
 }
 
-function renderSlotItem(item: CompositionSlotItem, metadata: MetadataDocument, library: ComponentLibraryData, callbacks: CallbackRegistry, publicProps: Record<string, unknown>): ReactNode {
+function renderSlotItem(item: CompositionSlotItem, metadata: MetadataDocument, library: ComponentLibraryData, callbacks: CallbackRegistry, scope: EvaluationScope): ReactNode {
     switch (item.kind) {
         case "text":
             return item.value
         case "void":
             return null
         case "instance":
-            return renderInstance(item.instance, metadata, library, callbacks, publicProps)
+            return renderInstance(item.instance, metadata, library, callbacks, scope)
     }
 }
 
@@ -129,9 +130,9 @@ function renderNodesValue(
     metadata: MetadataDocument,
     library: ComponentLibraryData,
     callbacks: CallbackRegistry,
-    publicProps: Record<string, unknown>
+    scope: EvaluationScope
 ): ReactNode {
-    const rendered = items.map(item => renderSlotItem(item, metadata, library, callbacks, publicProps))
+    const rendered = items.map(item => renderSlotItem(item, metadata, library, callbacks, scope))
     const rule = resolveSlotPolicy(componentMeta, path)
     const multiple = rule?.slot !== undefined && "multiple" in rule.slot && rule.slot.multiple === true
     if (rendered.length === 1 && !multiple) return rendered[0]
@@ -171,10 +172,10 @@ function renderCompositionValue(
     metadata: MetadataDocument,
     library: ComponentLibraryData,
     callbacks: CallbackRegistry,
-    publicProps: Record<string, unknown>
+    scope: EvaluationScope
 ): unknown {
     switch (value.kind) {
-        case "prop": return publicProps[value.name]
+        case "prop": return scope.props[value.name]
         case "leaf": {
             const construct = fromValueJson(stripNullish(schema), value.value)
             try { return constructToJs(construct, metadata, library) }
@@ -184,7 +185,7 @@ function renderCompositionValue(
             }
         }
         case "nodes":
-            return renderNodesValue(componentMeta, path, value.value.items, metadata, library, callbacks, publicProps)
+            return renderNodesValue(componentMeta, path, value.value.items, metadata, library, callbacks, scope)
         case "componentRef":
             return resolveComponentRef(value.value, library, metadata)
         case "object": {
@@ -194,7 +195,7 @@ function renderCompositionValue(
             for (const [key, childValue] of Object.entries(value.fields)) {
                 const childSchema = resolveSegment(stripped, key)
                 if (isPathResolutionDiagnostic(childSchema)) throw new Error(`renderComposition: internal error - unresolvable field "${key}" on a validated "object" CompositionValue`)
-                result[key] = renderCompositionValue(componentMeta, [...path, key], childSchema, childValue, metadata, library, callbacks, publicProps)
+                result[key] = renderCompositionValue(componentMeta, [...path, key], childSchema, childValue, metadata, library, callbacks, scope)
             }
             return result
         }
@@ -204,21 +205,23 @@ function renderCompositionValue(
             const elementSchema = resolveSegment(stripped, {kind: "each"})
             if (isPathResolutionDiagnostic(elementSchema)) throw new Error(`renderComposition: internal error - unresolvable element schema on a validated "array" CompositionValue`)
             return value.items.map(item => {
-                const rendered = renderCompositionValue(componentMeta, [...path, {kind: "each"}], elementSchema, item.value, metadata, library, callbacks, publicProps)
+                const rendered = renderCompositionValue(componentMeta, [...path, {kind: "each"}], elementSchema, item.value, metadata, library, callbacks, scope)
                 return isValidElement(rendered) ? cloneElement(rendered, {key: item.itemId}) : rendered
             })
         }
+        case "expression":
+            return evaluateExpression(value.expression, scope, library.valueAdapters)
         case "variant": {
             const stripped = stripNullish(schema)
             if (!(stripped instanceof UnionSchema)) throw new Error(`renderComposition: internal error - expected a UnionSchema at a validated "variant" CompositionValue`)
             const memberSchema = resolveSegment(stripped, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals})
             if (isPathResolutionDiagnostic(memberSchema)) throw new Error(`renderComposition: internal error - unresolvable variant member on a validated "variant" CompositionValue`)
-            return renderCompositionValue(componentMeta, [...path, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals}], memberSchema, value.value, metadata, library, callbacks, publicProps)
+            return renderCompositionValue(componentMeta, [...path, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals}], memberSchema, value.value, metadata, library, callbacks, scope)
         }
     }
 }
 
-function renderInstance(node: CompositionInstance, metadata: MetadataDocument, library: ComponentLibraryData, callbacks: CallbackRegistry, publicProps: Record<string, unknown>, key?: number): ReactElement {
+function renderInstance(node: CompositionInstance, metadata: MetadataDocument, library: ComponentLibraryData, callbacks: CallbackRegistry, scope: EvaluationScope, key?: number): ReactElement {
     const componentMeta = findMetadata(metadata, node.componentId)
     const entry = findComponentEntry(library, node.componentId)
     if (entry === undefined) throw new Error(`No registry entry with id "${node.componentId}" (should have been caught by validateComposition)`)
@@ -228,7 +231,7 @@ function renderInstance(node: CompositionInstance, metadata: MetadataDocument, l
         const provided = node.props[propName]
         if (provided === undefined) continue
         if (provided.kind === "prop") {
-            props[propName] = publicProps[provided.name]
+            props[propName] = scope.props[provided.name]
             continue
         }
         if (provided.kind === "callback") {
@@ -236,7 +239,7 @@ function renderInstance(node: CompositionInstance, metadata: MetadataDocument, l
             continue
         }
         const schema = schemaFromJson(propMeta.schema)
-        props[propName] = renderCompositionValue(componentMeta, [propName], schema, provided.value, metadata, library, callbacks, publicProps)
+        props[propName] = renderCompositionValue(componentMeta, [propName], schema, provided.value, metadata, library, callbacks, scope)
     }
 
     if (key !== undefined) props["key"] = key
@@ -260,6 +263,9 @@ export function renderComposition(
     const callbacks = options.callbacks ?? {}
     const result = validateComposition(doc, metadata, library, callbacks, options.props ?? {})
     if (!result.valid) throw new CompositionValidationError(result.diagnostics)
-    const publicProps = resolveCompositionProps(doc as CompositionDocument, options.props ?? {}, library)
-    return renderInstance((doc as CompositionDocument).root, metadata, library, callbacks, publicProps)
+    const document = doc as CompositionDocument
+    const props = resolveCompositionProps(document, options.props ?? {}, library)
+    const functions = library.functions
+    const locals = document.schemaVersion === 6 ? evaluateLocals(document.locals, props, functions, library.valueAdapters) : {}
+    return renderInstance(document.root, metadata, library, callbacks, {props, locals, functions})
 }

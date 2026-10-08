@@ -1,6 +1,6 @@
 import {Fragment, isValidElement} from "react"
 import {ArraySchema, checkSlotValue, ComponentLibraryData, ComponentMetadata, ComponentTypeSchema, findComponentEntry, FunctionSchema, isAssignableTo, MetadataDocument, ObjectSchema, ReactNodeSchema, resolveSlotPolicy, Schema, schemaFromJson, SlotPath, UnionSchema, ValueJson} from "@reactive-forge/schema"
-import {CompositionDocument, CompositionPropDeclaration} from "./composition.js"
+import {CompositionDocument, CompositionPropDeclaration, declaresProps} from "./composition.js"
 import type {CompositionDiagnostic} from "./validate.js"
 import {decodeAdapterValue, encodeAdapterValue, validateAdapterValue} from "./adapters.js"
 
@@ -10,7 +10,7 @@ function canonical(value: unknown): string {
     if (value !== null && typeof value === "object") return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`).join(",")}}`
     return value === undefined ? "undefined" : JSON.stringify(value)
 }
-function assignable(source: Schema, target: Schema): boolean {
+export function assignable(source: Schema, target: Schema): boolean {
     if (canonical(source.toJson()) === canonical(target.toJson())) return true
     if (target.name === "unknown" || source.name === "never") return true
     if (target instanceof ReactNodeSchema) {
@@ -42,12 +42,12 @@ function assignable(source: Schema, target: Schema): boolean {
     try {return isAssignableTo(source, target)} catch {return false}
 }
 
-export interface PropContext {document: CompositionDocument, supplied?: Record<string, unknown>}
+export interface PropContext {document: CompositionDocument, supplied?: Record<string, unknown>, /** The type of each valid local, for expressions. */ locals?: Map<string, Schema>, /** Functions expressions may call. */ functions?: ComponentLibraryData["functions"]}
 function fail(diagnostics: CompositionDiagnostic[], code: string, message: string, path: string): void {
     diagnostics.push({severity: "error", code, message, path})
 }
 export function resolveCompositionProps(doc: CompositionDocument, supplied: Record<string, unknown>, library: ComponentLibraryData): Record<string, unknown> {
-    if (doc.schemaVersion !== 5) return {}
+    if (!declaresProps(doc)) return {}
     return Object.fromEntries(Object.entries(doc.props).map(([name, declaration]) => [name,
         Object.hasOwn(supplied, name) && supplied[name] !== undefined ? supplied[name]
             : declaration.defaultValue !== undefined ? decodeAdapterValue(declaration.defaultValue, library.valueAdapters) : undefined]))
@@ -102,7 +102,7 @@ function validateDefault(schema: Schema, value: ValueJson, library: ComponentLib
 }
 
 export function validateDeclarations(context: PropContext, metadata: MetadataDocument, library: ComponentLibraryData, diagnostics: CompositionDiagnostic[]): void {
-    if (context.document.schemaVersion !== 5) return
+    if (!declaresProps(context.document)) return
     const declarations = context.document.props as Record<string, CompositionPropDeclaration> | null | undefined
     if (!declarations || typeof declarations !== "object" || Array.isArray(declarations)) {fail(diagnostics, "invalid-prop-declarations", "Version 5 requires an explicit props declaration record", "props"); return}
     for (const [name, rawDeclaration] of Object.entries(declarations)) {
@@ -206,7 +206,7 @@ function validateBoundValue(schema: Schema, value: unknown, component: Component
     }
 }
 export function validatePropBinding(name: string, target: Schema, component: ComponentMetadata, path: SlotPath, diagnosticPath: string, metadata: MetadataDocument, library: ComponentLibraryData, diagnostics: CompositionDiagnostic[], context: PropContext, targetRequired = false): void {
-    if (context.document.schemaVersion !== 5) {fail(diagnostics, "unsupported-schema-version", "Prop bindings require composition schemaVersion 5", diagnosticPath); return}
+    if (!declaresProps(context.document)) {fail(diagnostics, "unsupported-schema-version", "Prop bindings require composition schemaVersion 5 or later", diagnosticPath); return}
     const declarations = context.document.props as Record<string, CompositionPropDeclaration> | null | undefined
     const declaration: CompositionPropDeclaration | undefined = declarations && Object.hasOwn(declarations, name) ? declarations[name] : undefined
     if (!declaration) {fail(diagnostics, "undeclared-composition-prop", `Binding references undeclared composition prop "${name}"`, diagnosticPath); return}
