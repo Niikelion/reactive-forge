@@ -6,7 +6,7 @@ import {decodeAdapterValue} from "./adapters.js"
 // Expressions: docs/composition-expressions.md. Typing, evaluation and TypeScript emission live
 // together so the three can never disagree about what an expression means.
 
-export const BINARY_OPS: readonly CompositionBinaryOp[] = ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "&&", "||"]
+export const BINARY_OPS: readonly CompositionBinaryOp[] = ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "??"]
 const forbiddenKeys = new Set(["__proto__", "constructor", "prototype"])
 
 export class ExpressionError extends Error {
@@ -207,6 +207,11 @@ export function expressionSchema(expression: CompositionExpression, scope: TypeS
                 case "<": case "<=": case ">": case ">=":
                     if ((isNumber(left) && isNumber(right)) || (isString(left) && isString(right))) return new BooleanSchema()
                     throw new ExpressionError("invalid-expression", `${expression.op} compares two numbers or two strings`)
+                case "??": {
+                    // The left side where it is present, otherwise the right.
+                    const present = members(left).filter(member => member.name !== "undefined" && member.name !== "null" && member.name !== "void")
+                    return unionOf([...present, right])
+                }
                 case "&&": case "||":
                     if (isCondition(left) && isCondition(right)) return new BooleanSchema()
                     throw new ExpressionError("invalid-expression", `${expression.op} needs booleans on both sides`)
@@ -272,6 +277,7 @@ export function evaluateExpression(expression: CompositionExpression, scope: Eva
         case "binary": {
             if (expression.op === "&&") return of(expression.left) === true && of(expression.right) === true
             if (expression.op === "||") return of(expression.left) === true || of(expression.right) === true
+            if (expression.op === "??") return of(expression.left) ?? of(expression.right)
             const left = of(expression.left) as number & string, right = of(expression.right) as number & string
             switch (expression.op) {
                 case "+": return left + right
@@ -325,7 +331,7 @@ const PRIMARY = 20, UNARY = 15, MULTIPLY = 13, ADD = 12, RELATIONAL = 10, EQUALI
 const binaryPrecedence: Record<CompositionBinaryOp, number> = {
     "*": MULTIPLY, "/": MULTIPLY, "%": MULTIPLY, "+": ADD, "-": ADD,
     "<": RELATIONAL, "<=": RELATIONAL, ">": RELATIONAL, ">=": RELATIONAL,
-    "==": EQUALITY, "!=": EQUALITY, "&&": AND, "||": OR,
+    "==": EQUALITY, "!=": EQUALITY, "&&": AND, "||": OR, "??": NULLISH,
 }
 const identifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/
 const propertyKey = (key: string): string => identifier.test(key) ? key : JSON.stringify(key)
@@ -381,7 +387,9 @@ function emit(expression: CompositionExpression, scope: EmitScope): Emitted {
         case "binary": {
             const precedence = binaryPrecedence[expression.op]
             const op = expression.op === "==" ? "===" : expression.op === "!=" ? "!==" : expression.op
-            return {text: `${wrap(of(expression.left), precedence)} ${op} ${wrap(of(expression.right), precedence + 0.1)}`, precedence}
+            // JavaScript refuses ?? beside && or || without parentheses, so its operands bind tighter than both.
+            const minimum = expression.op === "??" ? AND + 0.1 : precedence
+            return {text: `${wrap(of(expression.left), minimum)} ${op} ${wrap(of(expression.right), Math.max(minimum, precedence + 0.1))}`, precedence}
         }
         case "unary": {
             const operand = wrap(of(expression.value), UNARY)

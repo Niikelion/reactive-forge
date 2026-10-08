@@ -163,3 +163,30 @@ test('emitted operators keep their grouping', () => {
     assert.match(renderToStaticMarkup(renderComposition(doc, metadata, library, {props: {label: 'x'}})), /gap:10px/);
   } finally { result.dispose(); }
 });
+
+test('?? keeps its parentheses beside && and ||, and text expressions fill an open slot', () => {
+  const {Note} = require('./fixtures/expressions/Box.tsx');
+  const noteProps = {children: {schema: {type: 'reactNode'}, required: false}};
+  const meta = {...metadata, components: [...metadata.components, {id: 'note', name: 'Note', sourcePath: 'Box.tsx', isDefault: false, props: {children: {...noteProps.children, diagnostics: []}}, diagnostics: [], slots: []}]};
+  const lib = {...library, files: [...library.files, {path: 'Box.tsx', components: {Note: {id: 'note', component: Note, args: {type: 'object', properties: noteProps}}}}]};
+  const doc = {
+    schemaVersion: 6,
+    props: {title: {schema: string, required: false}, loud: {schema: boolean, required: false}, quiet: {schema: boolean, required: false}},
+    locals: {shout: {expression: binary('??', binary('||', prop('loud'), prop('quiet')), literal(false))}},
+    root: {kind: 'instance', instanceId: 'note', componentId: 'note', props: {
+      children: composed(expression({kind: 'if', condition: local('shout'), then: binary('+', binary('??', prop('title'), literal('Untitled')), literal('!')), else: binary('??', prop('title'), literal('Untitled'))})),
+    }},
+  };
+  assert.deepEqual(validateComposition(doc, meta, lib).diagnostics.filter(d => d.severity === 'error'), []);
+  const source = exportToTsx(doc, meta, lib, {resolveImportPath: () => '../Box'});
+  assert.match(source, /const shout = \(props\["loud"\] \|\| props\["quiet"\]\) \?\? false/);
+  const result = compile(source);
+  try {
+    assert.deepEqual(result.diagnostics, []);
+    const Generated = require(result.generated).default;
+    for (const props of [{}, {title: 'Hey', loud: true}, {title: 'Hi', quiet: false}]) {
+      assert.equal(renderToStaticMarkup(React.createElement(Generated, props)), renderToStaticMarkup(renderComposition(doc, meta, lib, {props})));
+    }
+    assert.equal(renderToStaticMarkup(renderComposition(doc, meta, lib, {props: {title: 'Hey', loud: true}})), '<p>Hey!</p>');
+  } finally { result.dispose(); }
+});

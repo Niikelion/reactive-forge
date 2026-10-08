@@ -66,7 +66,7 @@ export type CompositionValue =
     | { kind: "expression", expression: CompositionExpression }
 
 /** Binary operators an expression may use. Equality is strict. */
-export type CompositionBinaryOp = "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||"
+export type CompositionBinaryOp = "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||" | "??"
 
 /**
  * A portable, side-effect-free computation over a document's public props and locals

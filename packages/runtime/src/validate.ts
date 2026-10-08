@@ -301,9 +301,14 @@ function validateCompositionValue(
                 diagnostics.push({severity: "error", code: "unsupported-schema-version", message: "Expressions require composition schemaVersion 6", path: diagnosticPath})
                 return
             }
+            // In a slot, an expression can only be text: a slot that accepts anything takes a string or number.
             const rule = resolveSlotPolicy(componentMeta, path)
+            if (rule?.slot !== undefined && rule.slot.kind !== "any") {
+                diagnostics.push({severity: "error", code: "slot-domain-path-not-composed", message: `An expression cannot fill a "${rule.slot.kind}" slot`, path: diagnosticPath})
+                return
+            }
             if (rule?.slot !== undefined) {
-                diagnostics.push({severity: "error", code: "slot-domain-path-not-composed", message: `An expression cannot sit at a slot-domain path (this path resolves to a "${rule.slot.kind}" policy)`, path: diagnosticPath})
+                validateExpression(value.expression, schemaFromJson({type: "union", types: [{type: "string"}, {type: "number"}, {type: "null"}, {type: "undefined"}]}), propContext, diagnosticPath, diagnostics)
                 return
             }
             validateExpression(value.expression, schema, propContext, diagnosticPath, diagnostics)
