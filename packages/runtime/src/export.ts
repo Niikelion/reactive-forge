@@ -34,11 +34,27 @@ interface EmitContext {
 function documentExpressions(doc: CompositionDocument): CompositionExpression[] {
     const found: CompositionExpression[] = doc.schemaVersion === 6 ? Object.values(doc.locals ?? {}).map(local => local.expression) : []
     const value = (current: CompositionValue): void => {
-        if (current.kind === "expression") found.push(current.expression)
-        else if (current.kind === "object") Object.values(current.fields).forEach(value)
-        else if (current.kind === "array") current.items.forEach(item => { value(item.value); })
-        else if (current.kind === "variant") value(current.value)
-        else if (current.kind === "nodes") current.value.items.forEach(item => { if (item.kind === "instance") instance(item.instance) })
+        switch (current.kind) {
+            case "expression":
+                found.push(current.expression)
+                return
+            case "object":
+                Object.values(current.fields).forEach(value)
+                return
+            case "array":
+                current.items.forEach(item => { value(item.value) })
+                return
+            case "variant":
+                value(current.value)
+                return
+            case "nodes":
+                current.value.items.forEach(item => { if (item.kind === "instance") instance(item.instance) })
+                return
+            case "prop":
+            case "leaf":
+            case "componentRef":
+                return
+        }
     }
     const instance = (node: CompositionInstance): void => {
         for (const prop of Object.values(node.props)) if (prop.kind === "composed") value(prop.value)
