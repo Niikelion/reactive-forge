@@ -5,12 +5,16 @@ import {
     ExternalComponentIdentity,
     MetadataDocument,
     resolveSlotPolicy,
+    Schema,
     schemaFromJson,
     SlotPath,
     ValueJson
 } from "@reactive-forge/schema"
 import {
     CompositionDocument,
+    CompositionExpression,
+    CompositionLocal,
+    declaresProps,
     CompositionInstance,
     CompositionPropValue,
     CompositionSlotItem,
@@ -19,6 +23,30 @@ import {
 import {validateComposition} from "./validate.js"
 import {CompositionValidationError} from "./render.js"
 import {exportSchemaType} from "./export-types.js"
+import {EmitScope, emitExpression, expressionSchema, expressionUses, orderLocals, TypeScope} from "./expressions.js"
+
+/** What serialization needs besides the tree: how to read a public prop, and how to write an expression. */
+interface EmitContext {
+    propsName: string
+    expression(expression: CompositionExpression): string
+}
+
+/** Every expression a document holds, in its tree and in its locals. */
+function documentExpressions(doc: CompositionDocument): CompositionExpression[] {
+    const found: CompositionExpression[] = doc.schemaVersion === 6 ? Object.values(doc.locals ?? {}).map(local => local.expression) : []
+    const value = (current: CompositionValue): void => {
+        if (current.kind === "expression") found.push(current.expression)
+        else if (current.kind === "object") Object.values(current.fields).forEach(value)
+        else if (current.kind === "array") current.items.forEach(item => value(item.value))
+        else if (current.kind === "variant") value(current.value)
+        else if (current.kind === "nodes") current.value.items.forEach(item => { if (item.kind === "instance") instance(item.instance) })
+    }
+    const instance = (node: CompositionInstance): void => {
+        for (const prop of Object.values(node.props)) if (prop.kind === "composed") value(prop.value)
+    }
+    instance(doc.root)
+    return found
+}
 
 // Generates browser-safe TSX without compiler dependencies. Public inputs come exclusively
 // from schemaVersion 5's explicit doc.props declarations, including unused declarations.
@@ -70,7 +98,7 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
         throw new Error(`exportToTsx: composition schemaVersion 1 is not accepted by the v3 exporter; call migrateCompositionDocumentV1ToV2(doc) then migrateCompositionDocumentV2ToV3(doc, metadata) first`)
     if (schemaVersion === 2)
         throw new Error(`exportToTsx: composition schemaVersion 2 is not accepted by the v3 exporter; call migrateCompositionDocumentV2ToV3(doc, metadata) first`)
-    if (schemaVersion !== 3 && schemaVersion !== 4 && schemaVersion !== 5)
+    if (schemaVersion !== 3 && schemaVersion !== 4 && schemaVersion !== 5 && schemaVersion !== 6)
         throw new Error(`exportToTsx: unsupported composition schemaVersion: ${String(schemaVersion)}`)
 
     const validation = validateComposition(doc, metadata, library)
@@ -78,10 +106,13 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
 
     const exportedComponentName = options.exportedComponentName ?? "ExportedComposition"
     const resolveImportPath = options.resolveImportPath ?? defaultResolveImportPath
-    const declarations = doc.schemaVersion === 5 ? doc.props : {}
+    const declarations = declaresProps(doc) ? doc.props : {}
+    const locals = doc.schemaVersion === 6 ? doc.locals ?? {} : {}
 
     const referencedIdentities = new Map<ImportKey, ComponentIdentity>()
     collectInstanceComponentIds(doc.root, referencedIdentities, metadata)
+    const clsxIdentity: ComponentIdentity = {source: "external", package: "clsx", exportName: "default", isDefault: true}
+    if (documentExpressions(doc).some(expression => expressionUses(expression, "classList"))) referencedIdentities.set(identityKey(clsxIdentity), clsxIdentity)
     for (const declaration of Object.values(declarations)) {
         if (!declaration.typeSource) continue
         const {key, identity} = instanceImportKeyAndIdentity(declaration.typeSource.componentId, metadata)
@@ -131,7 +162,25 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
         return `${JSON.stringify(name)}${declaration.required && declaration.defaultValue === undefined ? "" : "?"}: ${type}`
     })
     const resolvedPropsName = defaultAssignments.length ? uniqueIdentifier("values", used) : propsParamName
-    const bodyJsx = renderInstanceJsx(doc.root, metadata, imports, resolvedPropsName)
+    // Locals become consts, in dependency order, named after the local where the name is free.
+    const localNames = new Map(orderLocals(locals).map(name => [name, uniqueIdentifier(sanitizeIdentifier(name), used)]))
+    const localTypes = new Map<string, Schema>()
+    const types: TypeScope = {prop: name => Object.hasOwn(declarations, name) ? declarations[name] : undefined, local: name => localTypes.get(name)}
+    const emitScope: EmitScope = {
+        types,
+        prop: name => serializePropBindingExpression(name, {propsName: resolvedPropsName, expression: () => ""}),
+        local: name => localNames.get(name) ?? sanitizeIdentifier(name),
+        literal: value => serializeValueExpression(value, imports, metadata),
+        clsx: imports.get(identityKey(clsxIdentity))?.localName ?? "clsx",
+    }
+    const localLines: string[] = []
+    for (const [name, constName] of localNames) {
+        const expression = (locals[name] as CompositionLocal).expression
+        localLines.push(`    const ${constName} = ${emitExpression(expression, emitScope)}`)
+        localTypes.set(name, expressionSchema(expression, types))
+    }
+    const ctx: EmitContext = {propsName: resolvedPropsName, expression: expression => emitExpression(expression, emitScope)}
+    const bodyJsx = renderInstanceJsx(doc.root, metadata, imports, ctx)
 
     const lines = [
         "// Generated by @reactive-forge/runtime's exportToTsx. Do not edit.",
@@ -139,6 +188,7 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
         "",
         `export default function ${exportedComponentName}(${propTypes.length ? `${propsParamName}: { ${propTypes.join("; ")} }${Object.values(declarations).every(prop => !prop.required || prop.defaultValue !== undefined) ? " = {}" : ""}` : ""}) {`,
         ...(defaultAssignments.length ? [`    const ${resolvedPropsName} = {...${propsParamName}, ${defaultAssignments.join(", ")}}`] : []),
+        ...localLines,
         `    return (`,
         `        ${bodyJsx}`,
         `    )`,
@@ -216,6 +266,8 @@ function collectCompositionValueComponentIds(value: CompositionValue, ids: Map<I
             return
         case "variant":
             collectCompositionValueComponentIds(value.value, ids, metadata)
+            return
+        case "expression":
             return
     }
 }
@@ -370,8 +422,8 @@ function serializeValueExpression(value: ValueJson, imports: Map<ImportKey, Impo
     }
 }
 
-function serializePropBindingExpression(name: string, propsParamName: string): string {
-    return `${propsParamName}[${JSON.stringify(name)}]`
+function serializePropBindingExpression(name: string, ctx: EmitContext): string {
+    return `${ctx.propsName}[${JSON.stringify(name)}]`
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -380,25 +432,25 @@ function serializePropBindingExpression(name: string, propsParamName: string): s
 // (docs/slot-contract-recursive.md section 5).
 // ---------------------------------------------------------------------------------------------
 
-function serializeSlotItemAsExpression(item: CompositionSlotItem, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, propsParamName: string): string {
+function serializeSlotItemAsExpression(item: CompositionSlotItem, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, ctx: EmitContext): string {
     switch (item.kind) {
         case "text":
             return JSON.stringify(item.value)
         case "void":
             return "null"
         case "instance":
-            return renderInstanceJsx(item.instance, metadata, imports, propsParamName)
+            return renderInstanceJsx(item.instance, metadata, imports, ctx)
     }
 }
 
-function serializeSlotItemAsChild(item: CompositionSlotItem, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, propsParamName: string): string {
+function serializeSlotItemAsChild(item: CompositionSlotItem, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, ctx: EmitContext): string {
     switch (item.kind) {
         case "text":
             return `{${JSON.stringify(item.value)}}`
         case "void":
             return "{null}"
         case "instance":
-            return renderInstanceJsx(item.instance, metadata, imports, propsParamName)
+            return renderInstanceJsx(item.instance, metadata, imports, ctx)
     }
 }
 
@@ -407,17 +459,17 @@ function serializeSlotValueExpression(
     items: CompositionSlotItem[],
     metadata: MetadataDocument,
     imports: Map<ImportKey, ImportEntry>,
-    propsParamName: string
+    ctx: EmitContext
 ): string {
     const multiple = rule?.slot !== undefined && "multiple" in rule.slot && rule.slot.multiple === true
 
     if (items.length === 1 && !multiple) {
         const only = items[0]
         if (only === undefined) return "null"
-        return serializeSlotItemAsExpression(only, metadata, imports, propsParamName)
+        return serializeSlotItemAsExpression(only, metadata, imports, ctx)
     }
 
-    const childrenSrc = items.map(item => serializeSlotItemAsChild(item, metadata, imports, propsParamName)).join("")
+    const childrenSrc = items.map(item => serializeSlotItemAsChild(item, metadata, imports, ctx)).join("")
     return `<>${childrenSrc}</>`
 }
 
@@ -433,11 +485,11 @@ function serializeCompositionValue(
     value: CompositionValue,
     metadata: MetadataDocument,
     imports: Map<ImportKey, ImportEntry>,
-    propsParamName: string
+    ctx: EmitContext
 ): string {
     switch (value.kind) {
         case "prop":
-            return serializePropBindingExpression(value.name, propsParamName)
+            return serializePropBindingExpression(value.name, ctx)
         case "leaf":
             return serializeValueExpression(value.value, imports, metadata)
         case "componentRef": {
@@ -447,22 +499,24 @@ function serializeCompositionValue(
         }
         case "nodes": {
             const rule = resolveSlotPolicy(componentMeta, path)
-            return serializeSlotValueExpression(rule, value.value.items, metadata, imports, propsParamName)
+            return serializeSlotValueExpression(rule, value.value.items, metadata, imports, ctx)
         }
         case "object": {
             const entries = Object.entries(value.fields).map(([key, childValue]) => {
                 const keyText = validIdentifierPattern.test(key) ? key : JSON.stringify(key)
-                return `${keyText}: ${serializeCompositionValue(componentMeta, [...path, key], childValue, metadata, imports, propsParamName)}`
+                return `${keyText}: ${serializeCompositionValue(componentMeta, [...path, key], childValue, metadata, imports, ctx)}`
             })
             return `{${entries.join(", ")}}`
         }
         case "array": {
             const elements = value.items.map(item =>
-                serializeCompositionValue(componentMeta, [...path, {kind: "each"}], item.value, metadata, imports, propsParamName))
+                serializeCompositionValue(componentMeta, [...path, {kind: "each"}], item.value, metadata, imports, ctx))
             return `[${elements.join(", ")}]`
         }
         case "variant":
-            return serializeCompositionValue(componentMeta, [...path, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals}], value.value, metadata, imports, propsParamName)
+            return serializeCompositionValue(componentMeta, [...path, {kind: "variant", prop: value.selector.prop, equals: value.selector.equals}], value.value, metadata, imports, ctx)
+        case "expression":
+            return ctx.expression(value.expression)
     }
 }
 
@@ -478,11 +532,11 @@ function serializePropFragment(
     componentMeta: ComponentMetadata,
     imports: Map<ImportKey, ImportEntry>,
     metadata: MetadataDocument,
-    propsParamName: string
+    ctx: EmitContext
 ): string {
     const exprText = propValue.kind === "callback" || propValue.kind === "prop"
-        ? serializePropBindingExpression(propValue.name, propsParamName)
-        : serializeCompositionValue(componentMeta, [propName], propValue.value, metadata, imports, propsParamName)
+        ? serializePropBindingExpression(propValue.name, ctx)
+        : serializeCompositionValue(componentMeta, [propName], propValue.value, metadata, imports, ctx)
 
     if (!jsxAttributeNamePattern.test(propName))
         return `{...{ ${JSON.stringify(propName)}: ${exprText} }}`
@@ -498,7 +552,7 @@ function serializePropFragment(
 
 // Components without an explicit children prop remain self-closing. Other node slots
 // remain attributes even when they contain JSX.
-function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, propsParamName: string): string {
+function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument, imports: Map<ImportKey, ImportEntry>, ctx: EmitContext): string {
     const meta = findComponentMeta(metadata, node.componentId)
     const {key} = instanceImportKeyAndIdentity(node.componentId, metadata)
     const entry = imports.get(key)
@@ -506,19 +560,19 @@ function renderInstanceJsx(node: CompositionInstance, metadata: MetadataDocument
 
     const propFragments = Object.entries(node.props)
         .filter(([name]) => name !== "children")
-        .map(([name, value]) => serializePropFragment(name, value, meta, imports, metadata, propsParamName))
+        .map(([name, value]) => serializePropFragment(name, value, meta, imports, metadata, ctx))
     const opening = `<${entry.localName}${propFragments.length > 0 ? ` ${propFragments.join(" ")}` : ""}`
     const children = node.props["children"]
     if (children === undefined) return `${opening} />`
     if (children.kind === "composed" && children.value.kind === "nodes") {
         const content = children.value.value.items
-            .map(item => serializeSlotItemAsChild(item, metadata, imports, propsParamName))
+            .map(item => serializeSlotItemAsChild(item, metadata, imports, ctx))
             .join("")
         return `${opening}>${content}</${entry.localName}>`
     }
     const expression = children.kind === "callback" || children.kind === "prop"
-        ? serializePropBindingExpression(children.name, propsParamName)
-        : serializeCompositionValue(meta, ["children"], children.value, metadata, imports, propsParamName)
+        ? serializePropBindingExpression(children.name, ctx)
+        : serializeCompositionValue(meta, ["children"], children.value, metadata, imports, ctx)
     const content = expression.startsWith("<") ? expression : `{${expression}}`
     return `${opening}>${content}</${entry.localName}>`
 }

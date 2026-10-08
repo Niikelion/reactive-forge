@@ -61,6 +61,37 @@ export type CompositionValue =
     | { kind: "componentRef", value: ComponentIdentity }
     | { kind: "nodes", value: CompositionSlotValue }
 
+    // A value computed from the document's public props and locals (schemaVersion 6,
+    // docs/composition-expressions.md). Never sits at a slot-domain path.
+    | { kind: "expression", expression: CompositionExpression }
+
+/** Binary operators an expression may use. Equality is strict. */
+export type CompositionBinaryOp = "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||"
+
+/**
+ * A portable, side-effect-free computation over a document's public props and locals
+ * (docs/composition-expressions.md). There are no function calls, and nothing outside the
+ * document is reachable.
+ */
+export type CompositionExpression =
+    | { kind: "literal", value: ValueJson }
+    | { kind: "prop", name: string }
+    | { kind: "local", name: string }
+    | { kind: "get", object: CompositionExpression, key: string }
+    | { kind: "object", fields: Record<string, CompositionExpression> }
+    | { kind: "if", condition: CompositionExpression, then: CompositionExpression, else: CompositionExpression }
+    | { kind: "match", input: CompositionExpression, cases: Record<string, CompositionExpression>, fallback?: CompositionExpression }
+    | { kind: "binary", op: CompositionBinaryOp, left: CompositionExpression, right: CompositionExpression }
+    | { kind: "unary", op: "!" | "-", value: CompositionExpression }
+    // A class name built from entries, each included while its condition holds. Exports as clsx(...).
+    | { kind: "classList", items: { value: CompositionExpression, when?: CompositionExpression }[] }
+
+/** A named value a schemaVersion 6 document computes once; its expressions may refer to it. */
+export interface CompositionLocal {
+    expression: CompositionExpression
+    description?: string
+}
+
 /**
  * One array entry, docs/slot-contract-recursive.md section 1.3 — the type that makes "one declared
  * array entry" and "how many rendered nodes that one entry's ReactNode holds" independently
@@ -148,6 +179,12 @@ export interface CompositionPropDeclaration {
 export type CompositionDocument =
     | {schemaVersion: 3 | 4, root: CompositionInstance, props?: never}
     | {schemaVersion: 5, root: CompositionInstance, props: Record<string, CompositionPropDeclaration>}
+    | {schemaVersion: 6, root: CompositionInstance, props: Record<string, CompositionPropDeclaration>, locals?: Record<string, CompositionLocal>}
+
+/** Whether a document declares public props: schemaVersion 5 and later. */
+export function declaresProps(doc: {schemaVersion: number}): doc is Extract<CompositionDocument, {schemaVersion: 5 | 6}> {
+    return doc.schemaVersion === 5 || doc.schemaVersion === 6
+}
 
 
 // ---------------------------------------------------------------------------------------------
