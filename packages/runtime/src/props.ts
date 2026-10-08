@@ -42,7 +42,7 @@ export function assignable(source: Schema, target: Schema): boolean {
     try {return isAssignableTo(source, target)} catch {return false}
 }
 
-export interface PropContext {document: CompositionDocument, supplied?: Record<string, unknown>, /** The type of each valid local, for expressions. */ locals?: Map<string, Schema>}
+export interface PropContext {document: CompositionDocument, supplied?: Record<string, unknown>, /** The type of each valid local, for expressions. */ locals?: Map<string, Schema>, /** Functions expressions may call. */ functions?: ComponentLibraryData["functions"]}
 function fail(diagnostics: CompositionDiagnostic[], code: string, message: string, path: string): void {
     diagnostics.push({severity: "error", code, message, path})
 }

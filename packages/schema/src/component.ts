@@ -18,10 +18,30 @@ export interface ComponentFileData {
     components: Record<string, ComponentEntry>
 }
 
+/**
+ * A pure function the host lets composition expressions call (`{kind: "call"}` in
+ * @reactive-forge/runtime). Rendering calls `implementation`; generated code imports the same
+ * function from `module`. Reactive Forge knows nothing about what it does beyond its types.
+ */
+export interface FunctionEntry {
+    implementation: (...args: never[]) => unknown
+    /** Module specifier generated code imports it from. */
+    module: string
+    exportName: string
+    isDefault?: boolean
+    /** Parameter types, in order. */
+    params: SchemaJson[]
+    /** The type of every argument after `params`, for a variadic function. */
+    rest?: SchemaJson
+    returns: SchemaJson
+}
+
 export interface ComponentLibraryData {
     groupValueFactories?: GroupValueFactory[]
     componentGroups?: ComponentGroup[]
     valueAdapters?: import("./schema/Instance").ValueAdapterRegistry
+    /** Functions composition expressions may call, by the name expressions use. */
+    functions?: Record<string, FunctionEntry>
     files: ComponentFileData[]
 }
 

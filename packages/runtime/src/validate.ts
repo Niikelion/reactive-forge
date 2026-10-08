@@ -331,6 +331,7 @@ function typeScope(propContext: PropContext): TypeScope {
     return {
         prop: name => Object.hasOwn(declarations, name) ? declarations[name] : undefined,
         local: name => propContext.locals?.get(name),
+        function: name => propContext.functions && Object.hasOwn(propContext.functions, name) ? propContext.functions[name] : undefined,
     }
 }
 
@@ -527,7 +528,7 @@ export function validateComposition(
     if (schemaVersion === 3) visitInstanceValues(doc.root, () => {
         diagnostics.push({severity: "error", code: "unsupported-schema-version", message: "Class values require composition schemaVersion 4", path: "root"})
     })
-    const propContext: PropContext = {document: doc as CompositionDocument, supplied: props}
+    const propContext: PropContext = {document: doc as CompositionDocument, supplied: props, functions: library.functions}
     try {
         validateDeclarations(propContext, metadata, library, diagnostics)
         validateLocals(propContext, diagnostics)

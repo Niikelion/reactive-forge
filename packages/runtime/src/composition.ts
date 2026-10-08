@@ -83,8 +83,8 @@ export type CompositionExpression =
     | { kind: "match", input: CompositionExpression, cases: Record<string, CompositionExpression>, fallback?: CompositionExpression }
     | { kind: "binary", op: CompositionBinaryOp, left: CompositionExpression, right: CompositionExpression }
     | { kind: "unary", op: "!" | "-", value: CompositionExpression }
-    // A class name built from entries, each included while its condition holds. Exports as clsx(...).
-    | { kind: "classList", items: { value: CompositionExpression, when?: CompositionExpression }[] }
+    // A call to a pure function the host registered in `ComponentLibraryData.functions`.
+    | { kind: "call", function: string, args: CompositionExpression[] }
 
 /** A named value a schemaVersion 6 document computes once; its expressions may refer to it. */
 export interface CompositionLocal {

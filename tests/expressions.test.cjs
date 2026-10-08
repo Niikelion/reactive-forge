@@ -8,6 +8,7 @@ const {renderToStaticMarkup} = require('react-dom/server');
 const {validateComposition, renderComposition, exportToTsx} = require('../packages/runtime/src/index.ts');
 const {evaluateExpression} = require('../packages/runtime/src/expressions.ts');
 const {Box} = require('./fixtures/expressions/Box.tsx');
+const {cx} = require('./fixtures/expressions/cx.ts');
 
 const string = {type: 'string'};
 const number = {type: 'number'};
@@ -17,7 +18,9 @@ const literals = values => ({type: 'union', types: values.map(value => ({type: '
 const style = {type: 'object', properties: {padding: {schema: optional(number), required: false}, gap: {schema: optional(number), required: false}, background: {schema: optional(string), required: false}}};
 const boxProps = {label: {schema: string, required: true}, className: {schema: optional(string), required: false}, style: {schema: optional(style), required: false}};
 const metadata = {schemaVersion: 4, generatedAt: '2026-10-08T00:00:00.000Z', components: [{id: 'box', name: 'Box', sourcePath: 'Box.tsx', isDefault: false, props: Object.fromEntries(Object.entries(boxProps).map(([name, value]) => [name, {...value, diagnostics: []}])), diagnostics: [], slots: []}]};
-const library = {files: [{path: 'Box.tsx', components: {Box: {id: 'box', component: Box, args: {type: 'object', properties: boxProps}}}}]};
+// The host registers the functions expressions may call; Reactive Forge only knows their types.
+const functions = {cx: {implementation: cx, module: '../cx', exportName: 'cx', params: [], rest: optional(string), returns: string}};
+const library = {functions, files: [{path: 'Box.tsx', components: {Box: {id: 'box', component: Box, args: {type: 'object', properties: boxProps}}}}]};
 
 const literal = value => ({kind: 'literal', value: typeof value === 'string' ? {type: 'string', value} : typeof value === 'number' ? {type: 'number', value} : {type: 'boolean', value}});
 const prop = name => ({kind: 'prop', name});
@@ -43,10 +46,10 @@ function document() {
     },
     root: {kind: 'instance', instanceId: 'root', componentId: 'box', props: {
       label: composed(expression(binary('+', prop('label'), literal('!')))),
-      className: composed(expression({kind: 'classList', items: [
-        {value: literal('box')},
-        {value: literal('box-large'), when: binary('==', prop('size'), literal('large'))},
-        {value: prop('className')},
+      className: composed(expression({kind: 'call', function: 'cx', args: [
+        literal('box'),
+        {kind: 'if', condition: binary('==', prop('size'), literal('large')), then: literal('box-large'), else: {kind: 'literal', value: {type: 'undefined'}}},
+        prop('className'),
       ]})),
       style: composed({kind: 'object', fields: {
         padding: expression(local('padding')),
@@ -72,10 +75,10 @@ test('expressions render and export to plain TypeScript with the same result', (
   const doc = document();
   assert.deepEqual(errors(doc), []);
   const source = exportDocument(doc);
-  assert.match(source, /import clsx from "clsx"/);
+  assert.match(source, /import \{ cx \} from "\.\.\/cx"/);
   assert.match(source, /const padding = /);
   assert.ok(source.indexOf('const padding') < source.indexOf('const gap'), 'a local comes after the locals it uses');
-  assert.match(source, /clsx\("box", /);
+  assert.match(source, /cx\("box", /);
   assert.match(source, /\["tone"\]\]/, 'a match of four cases becomes an object lookup');
   assert.match(source, /=== "medium" \? 8 : 24/, 'a match of three cases becomes conditionals');
   const result = compile(source);
@@ -118,6 +121,14 @@ test('expressions are typed against the position they fill', () => {
   cycle.locals.padding.expression = local('gap');
   assert.ok(errors(cycle).includes('local-cycle'));
 
+  const unknownFunction = document();
+  unknownFunction.root.props.className.value.expression.function = 'missing';
+  assert.ok(errors(unknownFunction).includes('unknown-function'));
+
+  const wrongArgument = document();
+  wrongArgument.root.props.className.value.expression.args.push(literal(3));
+  assert.ok(errors(wrongArgument).includes('incompatible-expression'));
+
   const unsafe = document();
   unsafe.root.props.label = composed(expression({kind: 'get', object: {kind: 'object', fields: {}}, key: '__proto__'}));
   assert.ok(errors(unsafe).includes('invalid-expression'));
@@ -136,7 +147,7 @@ test('evaluation follows the documented semantics', () => {
   assert.equal(evaluateExpression({kind: 'unary', op: '!', value: prop('flag')}, scope), true);
   assert.equal(evaluateExpression({kind: 'get', object: prop('record'), key: 'b'}, scope), undefined);
   assert.equal(evaluateExpression({kind: 'match', input: prop('count'), cases: {'3': literal('three')}}, scope), 'three');
-  assert.equal(evaluateExpression({kind: 'classList', items: [{value: literal('a')}, {value: prop('flag')}, {value: literal('c'), when: literal(false)}]}, scope), 'a');
+  assert.equal(evaluateExpression({kind: 'call', function: 'cx', args: [literal('a'), prop('flag'), literal('c')]}, {...scope, functions}), 'a c');
 });
 
 test('emitted operators keep their grouping', () => {

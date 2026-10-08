@@ -23,7 +23,7 @@ import {
 import {validateComposition} from "./validate.js"
 import {CompositionValidationError} from "./render.js"
 import {exportSchemaType} from "./export-types.js"
-import {EmitScope, emitExpression, expressionSchema, expressionUses, orderLocals, TypeScope} from "./expressions.js"
+import {calledFunctions, EmitScope, emitExpression, expressionSchema, orderLocals, TypeScope} from "./expressions.js"
 
 /** What serialization needs besides the tree: how to read a public prop, and how to write an expression. */
 interface EmitContext {
@@ -111,8 +111,15 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
 
     const referencedIdentities = new Map<ImportKey, ComponentIdentity>()
     collectInstanceComponentIds(doc.root, referencedIdentities, metadata)
-    const clsxIdentity: ComponentIdentity = {source: "external", package: "clsx", exportName: "default", isDefault: true}
-    if (documentExpressions(doc).some(expression => expressionUses(expression, "classList"))) referencedIdentities.set(identityKey(clsxIdentity), clsxIdentity)
+    // A function an expression calls is imported like an external component.
+    const functionIdentities = new Map<string, ComponentIdentity>()
+    for (const name of new Set(documentExpressions(doc).flatMap(calledFunctions))) {
+        const entry = library.functions?.[name]
+        if (!entry) throw new Error(`exportToTsx: function ${JSON.stringify(name)} is not registered`)
+        const identity: ComponentIdentity = {source: "external", package: entry.module, exportName: entry.exportName, isDefault: entry.isDefault ?? false}
+        functionIdentities.set(name, identity)
+        referencedIdentities.set(identityKey(identity), identity)
+    }
     for (const declaration of Object.values(declarations)) {
         if (!declaration.typeSource) continue
         const {key, identity} = instanceImportKeyAndIdentity(declaration.typeSource.componentId, metadata)
@@ -165,13 +172,22 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
     // Locals become consts, in dependency order, named after the local where the name is free.
     const localNames = new Map(orderLocals(locals).map(name => [name, uniqueIdentifier(sanitizeIdentifier(name), used)]))
     const localTypes = new Map<string, Schema>()
-    const types: TypeScope = {prop: name => Object.hasOwn(declarations, name) ? declarations[name] : undefined, local: name => localTypes.get(name)}
+    const types: TypeScope = {
+        prop: name => Object.hasOwn(declarations, name) ? declarations[name] : undefined,
+        local: name => localTypes.get(name),
+        function: name => library.functions?.[name],
+    }
     const emitScope: EmitScope = {
         types,
         prop: name => serializePropBindingExpression(name, {propsName: resolvedPropsName, expression: () => ""}),
         local: name => localNames.get(name) ?? sanitizeIdentifier(name),
         literal: value => serializeValueExpression(value, imports, metadata),
-        clsx: imports.get(identityKey(clsxIdentity))?.localName ?? "clsx",
+        function: name => {
+            const identity = functionIdentities.get(name)
+            const entry = identity && imports.get(identityKey(identity))
+            if (!entry) throw new Error(`exportToTsx: internal error - missing import for function ${JSON.stringify(name)}`)
+            return entry.localName
+        },
     }
     const localLines: string[] = []
     for (const [name, constName] of localNames) {

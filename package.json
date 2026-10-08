@@ -17,7 +17,6 @@
     "@arethetypeswrong/cli": "^0.17.3",
     "@changesets/cli": "^2.29.7",
     "@reactive-forge/eslint-config": "*",
-    "clsx": "^2.1.1",
     "eslint": "^9.14.0",
     "prettier": "^3.2.5",
     "react": "^19.0.0",

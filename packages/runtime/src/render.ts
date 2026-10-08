@@ -265,6 +265,7 @@ export function renderComposition(
     if (!result.valid) throw new CompositionValidationError(result.diagnostics)
     const document = doc as CompositionDocument
     const props = resolveCompositionProps(document, options.props ?? {}, library)
-    const locals = document.schemaVersion === 6 ? evaluateLocals(document.locals, props, library.valueAdapters) : {}
-    return renderInstance(document.root, metadata, library, callbacks, {props, locals})
+    const functions = library.functions
+    const locals = document.schemaVersion === 6 ? evaluateLocals(document.locals, props, functions, library.valueAdapters) : {}
+    return renderInstance(document.root, metadata, library, callbacks, {props, locals, functions})
 }

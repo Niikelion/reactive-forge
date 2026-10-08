@@ -1,4 +1,5 @@
-import {ArraySchema, BooleanSchema, NumberSchema, ObjectSchema, Schema, schemaFromJson, StringSchema, UnionSchema, ValueAdapterRegistry, ValueJson} from "@reactive-forge/schema"
+import {ArraySchema, BooleanSchema, FunctionEntry, NumberSchema, ObjectSchema, Schema, schemaFromJson, StringSchema, UnionSchema, ValueAdapterRegistry, ValueJson} from "@reactive-forge/schema"
+import {assignable} from "./props.js"
 import type {CompositionBinaryOp, CompositionExpression, CompositionLocal, CompositionPropDeclaration} from "./composition.js"
 import {decodeAdapterValue} from "./adapters.js"
 
@@ -32,21 +33,16 @@ function visit(expression: CompositionExpression, each: (expression: Composition
             return
         case "binary": visit(expression.left, each); visit(expression.right, each); return
         case "unary": visit(expression.value, each); return
-        case "classList":
-            for (const item of expression.items) {
-                visit(item.value, each)
-                if (item.when) visit(item.when, each)
-            }
-            return
+        case "call": for (const arg of expression.args) visit(arg, each); return
         default: return
     }
 }
 
-/** Whether an expression, or anything inside it, is of the given kind. */
-export function expressionUses(expression: CompositionExpression, kind: CompositionExpression["kind"]): boolean {
-    let found = false
-    visit(expression, current => { if (current.kind === kind) found = true })
-    return found
+/** The names of the functions an expression calls. */
+export function calledFunctions(expression: CompositionExpression): string[] {
+    const names = new Set<string>()
+    visit(expression, current => { if (current.kind === "call") names.add(current.function) })
+    return [...names]
 }
 
 /** Locals in an order where each comes after the locals it uses. Throws on an unknown local or a cycle. */
@@ -74,6 +70,7 @@ export function orderLocals(locals: Record<string, CompositionLocal>): string[] 
 export interface TypeScope {
     prop(name: string): CompositionPropDeclaration | undefined
     local(name: string): Schema | undefined
+    function(name: string): FunctionEntry | undefined
 }
 
 const undefinedSchema = (): Schema => schemaFromJson({type: "undefined"})
@@ -228,14 +225,16 @@ export function expressionSchema(expression: CompositionExpression, scope: TypeS
             }
             throw new ExpressionError("invalid-expression", `Unknown operator "${String(expression.op)}"`)
         }
-        case "classList": {
-            for (const item of expression.items) {
-                const value = of(item.value)
-                if (!every(value, member => member instanceof StringSchema || isNullish(member)) || !members(value).some(member => member instanceof StringSchema))
-                    throw new ExpressionError("invalid-expression", "A class list entry must be a string")
-                if (item.when && !isCondition(of(item.when))) throw new ExpressionError("invalid-expression", "A class list condition must be a boolean")
-            }
-            return new StringSchema()
+        case "call": {
+            const entry = Object.hasOwn(expression, "function") ? scope.function(expression.function) : undefined
+            if (!entry) throw new ExpressionError("unknown-function", `Unknown function "${expression.function}"; the host registers functions in library.functions`)
+            if (expression.args.length < entry.params.length) throw new ExpressionError("invalid-expression", `"${expression.function}" takes ${String(entry.params.length)} arguments`)
+            if (expression.args.length > entry.params.length && !entry.rest) throw new ExpressionError("invalid-expression", `"${expression.function}" takes ${String(entry.params.length)} arguments`)
+            expression.args.forEach((arg, index) => {
+                const parameter = schemaFromJson(index < entry.params.length ? entry.params[index] as typeof entry.returns : entry.rest as typeof entry.returns)
+                if (!assignable(of(arg), parameter)) throw new ExpressionError("incompatible-expression", `Argument ${String(index + 1)} of "${expression.function}" does not fit its parameter`)
+            })
+            return schemaFromJson(entry.returns)
         }
     }
     throw new ExpressionError("invalid-expression", `Unknown expression kind "${String((expression as {kind: unknown}).kind)}"`)
@@ -248,6 +247,7 @@ export function expressionSchema(expression: CompositionExpression, scope: TypeS
 export interface EvaluationScope {
     props: Record<string, unknown>
     locals: Record<string, unknown>
+    functions?: Record<string, FunctionEntry>
 }
 
 /** Evaluates a validated expression. Pure: the same scope always gives the same value. */
@@ -289,18 +289,17 @@ export function evaluateExpression(expression: CompositionExpression, scope: Eva
             return undefined
         }
         case "unary": return expression.op === "!" ? of(expression.value) !== true : -(of(expression.value) as number)
-        case "classList":
-            return expression.items
-                .filter(item => item.when === undefined || of(item.when) === true)
-                .map(item => of(item.value))
-                .filter(value => typeof value === "string" && value !== "")
-                .join(" ")
+        case "call": {
+            const entry = scope.functions?.[expression.function]
+            if (!entry) throw new Error(`renderComposition: function "${expression.function}" is not registered (should have been caught by validateComposition)`)
+            return (entry.implementation as (...args: unknown[]) => unknown)(...expression.args.map(of))
+        }
     }
 }
 
 /** Every local's value, each computed once, in dependency order. */
-export function evaluateLocals(locals: Record<string, CompositionLocal> | undefined, props: Record<string, unknown>, adapters?: ValueAdapterRegistry): Record<string, unknown> {
-    const scope: EvaluationScope = {props, locals: {}}
+export function evaluateLocals(locals: Record<string, CompositionLocal> | undefined, props: Record<string, unknown>, functions: Record<string, FunctionEntry> | undefined, adapters?: ValueAdapterRegistry): Record<string, unknown> {
+    const scope: EvaluationScope = {props, locals: {}, functions}
     if (!locals) return scope.locals
     for (const name of orderLocals(locals)) scope.locals[name] = evaluateExpression((locals[name] as CompositionLocal).expression, scope, adapters)
     return scope.locals
@@ -317,8 +316,8 @@ export interface EmitScope {
     /** The const a local is written to. */
     local(name: string): string
     literal(value: ValueJson): string
-    /** The local name `clsx` is imported as. */
-    clsx: string
+    /** The local name a registered function is imported as. */
+    function(name: string): string
 }
 
 // Precedence, higher binds tighter. Only the relative order matters.
@@ -389,10 +388,8 @@ function emit(expression: CompositionExpression, scope: EmitScope): Emitted {
             const text = expression.op === "-" && operand.startsWith("-") ? `-(${operand})` : `${expression.op}${operand}`
             return {text, precedence: UNARY}
         }
-        case "classList": {
-            const args = expression.items.map(item => item.when ? `${wrap(of(item.when), AND)} && ${wrap(of(item.value), AND + 0.1)}` : of(item.value).text)
-            return {text: `${scope.clsx}(${args.join(", ")})`, precedence: PRIMARY}
-        }
+        case "call":
+            return {text: `${scope.function(expression.function)}(${expression.args.map(arg => of(arg).text).join(", ")})`, precedence: PRIMARY}
     }
 }
 
