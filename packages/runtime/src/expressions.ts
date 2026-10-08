@@ -161,7 +161,7 @@ export function expressionSchema(expression: CompositionExpression, scope: TypeS
             if (!objects.length || !objects.every(member => member instanceof ObjectSchema))
                 throw new ExpressionError("invalid-expression", `Property "${expression.key}" is read from a value that is not an object`)
             const fields = objects.map(member => {
-                const objectSchema = member as ObjectSchema
+                const objectSchema = member
                 const field = objectSchema.properties[expression.key]
                 if (field) return field.required ? field.schema : unionOf([field.schema, undefinedSchema()])
                 if (objectSchema.indexType) return unionOf([objectSchema.indexType, undefinedSchema()])
@@ -224,11 +224,8 @@ export function expressionSchema(expression: CompositionExpression, scope: TypeS
                 if (!isCondition(value)) throw new ExpressionError("invalid-expression", "! needs a boolean")
                 return new BooleanSchema()
             }
-            if (expression.op === "-") {
-                if (!isNumber(value)) throw new ExpressionError("invalid-expression", "Unary - needs a number")
-                return new NumberSchema()
-            }
-            throw new ExpressionError("invalid-expression", `Unknown operator "${String(expression.op)}"`)
+            if (!isNumber(value)) throw new ExpressionError("invalid-expression", "Unary - needs a number")
+            return new NumberSchema()
         }
         case "call": {
             const entry = Object.hasOwn(expression, "function") ? scope.function(expression.function) : undefined
@@ -236,8 +233,9 @@ export function expressionSchema(expression: CompositionExpression, scope: TypeS
             if (expression.args.length < entry.params.length) throw new ExpressionError("invalid-expression", `"${expression.function}" takes ${String(entry.params.length)} arguments`)
             if (expression.args.length > entry.params.length && !entry.rest) throw new ExpressionError("invalid-expression", `"${expression.function}" takes ${String(entry.params.length)} arguments`)
             expression.args.forEach((arg, index) => {
-                const parameter = schemaFromJson(index < entry.params.length ? entry.params[index] as typeof entry.returns : entry.rest as typeof entry.returns)
-                if (!assignable(of(arg), parameter)) throw new ExpressionError("incompatible-expression", `Argument ${String(index + 1)} of "${expression.function}" does not fit its parameter`)
+                const declared = index < entry.params.length ? entry.params[index] : entry.rest
+                if (!declared) throw new ExpressionError("invalid-expression", `"${expression.function}" takes ${String(entry.params.length)} arguments`)
+                if (!assignable(of(arg), schemaFromJson(declared))) throw new ExpressionError("incompatible-expression", `Argument ${String(index + 1)} of "${expression.function}" does not fit its parameter`)
             })
             return schemaFromJson(entry.returns)
         }
@@ -271,26 +269,28 @@ export function evaluateExpression(expression: CompositionExpression, scope: Eva
         case "if": return of(expression.condition) === true ? of(expression.then) : of(expression.else)
         case "match": {
             const key = String(of(expression.input))
-            if (Object.hasOwn(expression.cases, key)) return of(expression.cases[key] as CompositionExpression)
-            return expression.fallback ? of(expression.fallback) : undefined
+            const branch = Object.hasOwn(expression.cases, key) ? expression.cases[key] : expression.fallback
+            return branch ? of(branch) : undefined
         }
         case "binary": {
             if (expression.op === "&&") return of(expression.left) === true && of(expression.right) === true
             if (expression.op === "||") return of(expression.left) === true || of(expression.right) === true
             if (expression.op === "??") return of(expression.left) ?? of(expression.right)
-            const left = of(expression.left) as number & string, right = of(expression.right) as number & string
+            const left = of(expression.left), right = of(expression.right)
+            if (expression.op === "==") return left === right
+            if (expression.op === "!=") return left !== right
+            // Validation leaves numbers, or strings where + joins and comparisons compare text.
+            const a = left as number, b = right as number
+            if (expression.op === "+") return typeof left === "string" || typeof right === "string" ? String(left as string | number) + String(right as string | number) : a + b
             switch (expression.op) {
-                case "+": return left + right
-                case "-": return left - right
-                case "*": return left * right
-                case "/": return left / right
-                case "%": return left % right
-                case "==": return left === right
-                case "!=": return left !== right
-                case "<": return left < right
-                case "<=": return left <= right
-                case ">": return left > right
-                case ">=": return left >= right
+                case "-": return a - b
+                case "*": return a * b
+                case "/": return a / b
+                case "%": return a % b
+                case "<": return a < b
+                case "<=": return a <= b
+                case ">": return a > b
+                case ">=": return a >= b
             }
             return undefined
         }
@@ -307,7 +307,10 @@ export function evaluateExpression(expression: CompositionExpression, scope: Eva
 export function evaluateLocals(locals: Record<string, CompositionLocal> | undefined, props: Record<string, unknown>, functions: Record<string, FunctionEntry> | undefined, adapters?: ValueAdapterRegistry): Record<string, unknown> {
     const scope: EvaluationScope = {props, locals: {}, functions}
     if (!locals) return scope.locals
-    for (const name of orderLocals(locals)) scope.locals[name] = evaluateExpression((locals[name] as CompositionLocal).expression, scope, adapters)
+    for (const name of orderLocals(locals)) {
+        const local = locals[name]
+        if (local) scope.locals[name] = evaluateExpression(local.expression, scope, adapters)
+    }
     return scope.locals
 }
 
@@ -376,7 +379,9 @@ function emit(expression: CompositionExpression, scope: EmitScope): Emitted {
             if (cases.length <= 3) {
                 // A chain of conditionals; the fallback, or the last case, is the final branch.
                 const tested = expression.fallback ? cases : cases.slice(0, -1)
-                let text = expression.fallback ? wrap(of(expression.fallback), CONDITIONAL) : wrap(of((cases.at(-1) as [string, CompositionExpression])[1]), CONDITIONAL)
+                const last = expression.fallback ?? cases.at(-1)?.[1]
+                if (!last) throw new ExpressionError("invalid-expression", "A match needs at least one case")
+                let text = wrap(of(last), CONDITIONAL)
                 for (const [key, branch] of [...tested].reverse())
                     text = `${wrap(input, EQUALITY + 1)} === ${caseLiteral(key, inputType)} ? ${wrap(of(branch), CONDITIONAL)} : ${text}`
                 return {text, precedence: tested.length ? CONDITIONAL : PRIMARY}

@@ -13,7 +13,6 @@ import {
 import {
     CompositionDocument,
     CompositionExpression,
-    CompositionLocal,
     declaresProps,
     CompositionInstance,
     CompositionPropValue,
@@ -37,7 +36,7 @@ function documentExpressions(doc: CompositionDocument): CompositionExpression[] 
     const value = (current: CompositionValue): void => {
         if (current.kind === "expression") found.push(current.expression)
         else if (current.kind === "object") Object.values(current.fields).forEach(value)
-        else if (current.kind === "array") current.items.forEach(item => value(item.value))
+        else if (current.kind === "array") current.items.forEach(item => { value(item.value); })
         else if (current.kind === "variant") value(current.value)
         else if (current.kind === "nodes") current.value.items.forEach(item => { if (item.kind === "instance") instance(item.instance) })
     }
@@ -191,7 +190,9 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
     }
     const localLines: string[] = []
     for (const [name, constName] of localNames) {
-        const expression = (locals[name] as CompositionLocal).expression
+        const local = locals[name]
+        if (!local) continue
+        const expression = local.expression
         localLines.push(`    const ${constName} = ${emitExpression(expression, emitScope)}`)
         localTypes.set(name, expressionSchema(expression, types))
     }

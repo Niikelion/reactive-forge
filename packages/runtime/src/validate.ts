@@ -357,7 +357,9 @@ function validateLocals(propContext: PropContext, diagnostics: CompositionDiagno
     propContext.locals = new Map()
     if (document.schemaVersion !== 6 || document.locals === undefined) return
     const locals = document.locals
-    if (typeof locals !== "object" || locals === null || Array.isArray(locals)) {
+    // Documents arrive as JSON, so the declared type is not a guarantee.
+    const raw: unknown = locals
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
         diagnostics.push({severity: "error", code: "invalid-locals", message: "Locals must be a record of named expressions", path: "locals"})
         return
     }
