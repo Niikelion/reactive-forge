@@ -190,3 +190,26 @@ test('?? keeps its parentheses beside && and ||, and text expressions fill an op
     assert.equal(renderToStaticMarkup(renderComposition(doc, meta, lib, {props: {title: 'Hey', loud: true}})), '<p>Hey!</p>');
   } finally { result.dispose(); }
 });
+
+test('a field of a record-typed value can be computed while the others stay literal', () => {
+  const record = {type: 'object', properties: {}, indexType: {type: 'union', types: [number, string]}};
+  const panelProps = {label: {schema: string, required: true}, style: {schema: optional(record), required: false}};
+  const meta = {...metadata, components: [{...metadata.components[0], id: 'panel', props: Object.fromEntries(Object.entries(panelProps).map(([name, value]) => [name, {...value, diagnostics: []}]))}]};
+  const lib = {...library, files: [{path: 'Box.tsx', components: {Box: {id: 'panel', component: Box, args: {type: 'object', properties: panelProps}}}}]};
+  const doc = {
+    schemaVersion: 6,
+    props: {wide: {schema: boolean, required: false, defaultValue: {type: 'boolean', value: false}}},
+    root: {kind: 'instance', instanceId: 'panel', componentId: 'panel', props: {
+      label: composed({kind: 'leaf', value: {type: 'string', value: 'x'}}),
+      style: composed({kind: 'object', fields: {
+        background: {kind: 'leaf', value: {type: 'string', value: '#fff'}},
+        padding: expression({kind: 'if', condition: prop('wide'), then: literal(24), else: literal(4)}),
+      }}),
+    }},
+  };
+  assert.deepEqual(validateComposition(doc, meta, lib).diagnostics.filter(d => d.severity === 'error'), []);
+  assert.equal(renderToStaticMarkup(renderComposition(doc, meta, lib, {props: {wide: true}})), '<div style="background:#fff;padding:24px">x</div>');
+  const unsafe = structuredClone(doc);
+  unsafe.root.props.style.value.fields.constructor = {kind: 'leaf', value: {type: 'string', value: 'x'}};
+  assert.ok(validateComposition(unsafe, meta, lib).diagnostics.some(d => d.severity === 'error'));
+});

@@ -84,9 +84,11 @@ function resolveStringSegment(schema: Schema, name: string): Schema | Diagnostic
     const stripped = stripNullish(schema)
 
     if (stripped instanceof ObjectSchema) {
-        const prop = stripped.properties[name]
-        if (!prop) return errorDiagnostic("unknown-path-segment", `Unknown property "${name}" on object schema`)
-        return prop.schema
+        const prop = Object.hasOwn(stripped.properties, name) ? stripped.properties[name] : undefined
+        if (prop) return prop.schema
+        // A record type: any key takes the index type.
+        if (stripped.indexType && !["__proto__", "constructor", "prototype"].includes(name)) return stripped.indexType
+        return errorDiagnostic("unknown-path-segment", `Unknown property "${name}" on object schema`)
     }
 
     if (stripped instanceof UnionSchema) {
