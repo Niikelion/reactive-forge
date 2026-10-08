@@ -1,5 +1,11 @@
 # @reactive-forge/vite
 
+## 2.3.0
+
+### Patch Changes
+
+- @reactive-forge/codegen@2.3.0
+
 ## 2.2.0
 
 ### Minor Changes

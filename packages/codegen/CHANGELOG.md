@@ -1,5 +1,12 @@
 # @reactive-forge/codegen
 
+## 2.3.0
+
+### Patch Changes
+
+- Updated dependencies [94fa929]
+  - @reactive-forge/schema@2.3.0
+
 ## 2.2.0
 
 ### Minor Changes
