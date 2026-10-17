@@ -200,7 +200,7 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     assert.match(tsxSource, /^import \{ ExportShowcase } from/m, 'imports the ExportShowcase component');
     assert.match(tsxSource, /^import \{ Greeter } from/m, 'imports the Greeter component');
     assert.match(tsxSource, /export default function ExportedComposition/, 'exports the default composition component');
-    assert.match(tsxSource, /title=\{values\["heading"\]\}/, 'explicit string binding is read from the public props');
+    assert.match(tsxSource, /title=\{heading\}/, 'defaulted string binding uses its resolved constant');
     assert.match(tsxSource, /"unused"\?: number/, 'unused explicitly declared props remain public');
     assert.match(tsxSource, /times=\{2\}/, 'a number value serializes as a numeric literal expression');
     assert.match(tsxSource, /active=\{true\}/, 'a boolean value serializes as a literal expression');
@@ -208,8 +208,8 @@ test('exportToTsx produces TSX that compiles and renders output identical to the
     assert.match(tsxSource, /meta=\{\{source: "fixture"\}\}/, 'an object value serializes as an object-literal expression');
     assert.match(tsxSource, /when=\{new Date\("2024-01-01T00:00:00\.000Z"\)\}/, 'a date value serializes as a `new Date(...)` expression');
     assert.match(tsxSource, /big=\{123456789012345n\}/, 'a bigint value serializes as a bigint literal expression');
-    assert.match(tsxSource, /onRender=\{values\["onCardRender"\]\}/);
-    assert.match(tsxSource, /onActivate=\{values\["onShowcaseActivate"\]\}/);
+    assert.match(tsxSource, /onRender=\{props.onCardRender\}/);
+    assert.match(tsxSource, /onActivate=\{props.onShowcaseActivate\}/);
     assert.doesNotMatch(tsxSource, /callbacks|Record<string|\bany\b/);
     assert.doesNotMatch(tsxSource, /=>\s*\{/, 'no fabricated function body is ever emitted for a callback reference');
     assert.doesNotMatch(tsxSource, /\bchildren=/, 'children never emits as a JSX attribute');
