@@ -1,5 +1,11 @@
 # @reactive-forge/next
 
+## 2.3.1
+
+### Patch Changes
+
+- @reactive-forge/codegen@2.3.1
+
 ## 2.3.0
 
 ### Patch Changes
