@@ -26,7 +26,7 @@ import {calledFunctions, EmitScope, emitExpression, expressionSchema, orderLocal
 
 /** What serialization needs besides the tree: how to read a public prop, and how to write an expression. */
 interface EmitContext {
-    propsName: string
+    prop(name: string): string
     expression(expression: CompositionExpression): string
 }
 
@@ -143,6 +143,7 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
     if (!isBindingIdentifier(exportedComponentName)) throw new Error(`exportToTsx: invalid exported component name ${JSON.stringify(exportedComponentName)}`)
     const imports = buildImportTable(referencedIdentities, metadata, new Set([exportedComponentName, "Exclude", "Array", "Date", "URL", "Map", "Set", "RegExp"]))
     const used = new Set([...imports.values()].map(entry => entry.localName))
+    for (const name of ["undefined", "Array", "Date", "URL", "Map", "Set", "RegExp", "NaN", "Infinity"]) used.add(name)
     used.add(exportedComponentName)
     const propsParamName = uniqueIdentifier("props", used)
     const factories = new Map<string, ImportEntry>()
@@ -167,6 +168,7 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
         .map(entry => formatImportStatement(entry, resolveImportPath))
 
     const defaultAssignments: string[] = []
+    const defaultNames = new Map<string, string>()
     const propTypes = Object.entries(declarations).map(([name, declaration]) => {
         let type: string
         if (declaration.typeSource) {
@@ -179,11 +181,15 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
             // Validation already checked defaults against the declared schema. Preserve
             // literal/tuple types and class parameters that expression inference widens.
             const expression = `(${serializeValueExpression(declaration.defaultValue, imports, metadata)} as ${type})`
-            defaultAssignments.push(`[${JSON.stringify(name)}]: ${propsParamName}[${JSON.stringify(name)}] === undefined ? ${expression} : ${propsParamName}[${JSON.stringify(name)}]`)
+            const localName = uniqueIdentifier(sanitizeIdentifier(name), used)
+            const access = propertyAccess(propsParamName, name)
+            const acceptsNull = schemaFromJson(declaration.schema).verifyConstructType({type: "null", value: null})
+            defaultAssignments.push(`    const ${localName} = ${acceptsNull ? `${access} === undefined ? ${expression} : ${access}` : `${access} ?? ${expression}`}`)
+            defaultNames.set(name, localName)
         }
         return `${JSON.stringify(name)}${declaration.required && declaration.defaultValue === undefined ? "" : "?"}: ${type}`
     })
-    const resolvedPropsName = defaultAssignments.length ? uniqueIdentifier("values", used) : propsParamName
+    const propReference = (name: string): string => defaultNames.get(name) ?? propertyAccess(propsParamName, name)
     // Locals become consts, in dependency order, named after the local where the name is free.
     const localNames = new Map(orderLocals(locals).map(name => [name, uniqueIdentifier(sanitizeIdentifier(name), used)]))
     const localTypes = new Map<string, Schema>()
@@ -194,7 +200,7 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
     }
     const emitScope: EmitScope = {
         types,
-        prop: name => serializePropBindingExpression(name, {propsName: resolvedPropsName, expression: () => ""}),
+        prop: propReference,
         local: name => localNames.get(name) ?? sanitizeIdentifier(name),
         literal: value => serializeValueExpression(value, imports, metadata),
         function: name => {
@@ -212,7 +218,7 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
         localLines.push(`    const ${constName} = ${emitExpression(expression, emitScope)}`)
         localTypes.set(name, expressionSchema(expression, types))
     }
-    const ctx: EmitContext = {propsName: resolvedPropsName, expression: expression => emitExpression(expression, emitScope)}
+    const ctx: EmitContext = {prop: propReference, expression: expression => emitExpression(expression, emitScope)}
     const bodyJsx = renderInstanceJsx(doc.root, metadata, imports, ctx)
 
     const lines = [
@@ -220,7 +226,7 @@ export function exportToTsx(doc: CompositionDocument, metadata: MetadataDocument
         ...importLines,
         "",
         `export default function ${exportedComponentName}(${propTypes.length ? `${propsParamName}: { ${propTypes.join("; ")} }${Object.values(declarations).every(prop => !prop.required || prop.defaultValue !== undefined) ? " = {}" : ""}` : ""}) {`,
-        ...(defaultAssignments.length ? [`    const ${resolvedPropsName} = {...${propsParamName}, ${defaultAssignments.join(", ")}}`] : []),
+        ...defaultAssignments,
         ...localLines,
         `    return (`,
         `        ${bodyJsx}`,
@@ -353,6 +359,11 @@ function buildImportTable(ids: Map<ImportKey, ComponentIdentity>, metadata: Meta
 }
 
 const validIdentifierPattern = /^[A-Za-z_$][A-Za-z0-9_$]*$/
+const propertyIdentifierPattern = /^[$_\p{ID_Start}][$\u200c\u200d\p{ID_Continue}]*$/u
+
+function propertyAccess(object: string, name: string): string {
+    return propertyIdentifierPattern.test(name) ? `${object}.${name}` : `${object}[${JSON.stringify(name)}]`
+}
 const reservedBindings = new Set("await break case catch class const continue debugger default delete do else enum export extends false finally for function if import in instanceof interface implements let new null package private protected public return static super switch this throw true try typeof var void while with yield eval arguments".split(" "))
 
 function isBindingIdentifier(name: string): boolean {
@@ -456,7 +467,7 @@ function serializeValueExpression(value: ValueJson, imports: Map<ImportKey, Impo
 }
 
 function serializePropBindingExpression(name: string, ctx: EmitContext): string {
-    return `${ctx.propsName}[${JSON.stringify(name)}]`
+    return ctx.prop(name)
 }
 
 // ---------------------------------------------------------------------------------------------

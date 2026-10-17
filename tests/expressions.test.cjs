@@ -79,7 +79,7 @@ test('expressions render and export to plain TypeScript with the same result', (
   assert.match(source, /const padding = /);
   assert.ok(source.indexOf('const padding') < source.indexOf('const gap'), 'a local comes after the locals it uses');
   assert.match(source, /cx\("box", /);
-  assert.match(source, /\["tone"\]\]/, 'a match of four cases becomes an object lookup');
+  assert.match(source, /\[tone\]/, 'a match of four cases becomes an object lookup');
   assert.match(source, /=== "medium" \? 8 : 24/, 'a match of three cases becomes conditionals');
   const result = compile(source);
   try {
@@ -134,6 +134,82 @@ test('expressions are typed against the position they fill', () => {
   assert.ok(errors(unsafe).includes('invalid-expression'));
 });
 
+test('defaulted props become named constants shared by JSX bindings and expressions', () => {
+  const doc = document();
+  const source = exportDocument(doc);
+  assert.match(source, /const size = props.size \?\? /);
+  assert.match(source, /const disabled = props.disabled \?\? /);
+  assert.match(source, /props.className/);
+  assert.doesNotMatch(source, /const values|\.\.\.props|props\["(?:size|label|className)"\]/);
+  const result = compile(source);
+  try {
+    assert.deepEqual(result.diagnostics, []);
+    const Generated = require(result.generated).default;
+    for (const supplied of [{label: ''}, {label: 'Save', disabled: false}, {label: 'Save', size: 'large'}]) {
+      assert.equal(renderToStaticMarkup(React.createElement(Generated, supplied)), renderToStaticMarkup(renderComposition(doc, metadata, library, {props: supplied})));
+    }
+  } finally { result.dispose(); }
+});
+
+test('prop constants avoid imports, locals, built-ins, reserved bindings and sanitized name collisions', () => {
+  const doc = document();
+  const names = ['Box', 'props', 'padding', 'save-click', 'save_click', 'default', 'undefined', 'Date'];
+  for (const name of names) doc.props[name] = {schema: string, required: false, defaultValue: {type: 'string', value: name}};
+  doc.props.timestamp = {schema: {type: 'date'}, required: false, defaultValue: {type: 'date', value: '2026-01-01T00:00:00.000Z'}};
+  doc.root.props.label = composed(expression(names.map(prop).reduce((left, right) => binary('+', left, right))));
+  const source = exportDocument(doc);
+  assert.match(source, /const Box1 = props.Box \?\?/);
+  assert.match(source, /const props1 = props.props \?\?/);
+  assert.match(source, /const save_click = props\["save-click"\] \?\?/);
+  assert.match(source, /const save_click1 = props.save_click \?\?/);
+  assert.match(source, /const _default = props.default \?\?/);
+  assert.match(source, /const undefined1 = props.undefined \?\?/);
+  assert.match(source, /const Date1 = props.Date \?\?/);
+  assert.match(source, /const padding1 = /);
+  const result = compile(source);
+  try {
+    assert.deepEqual(result.diagnostics, []);
+    const supplied = {label: 'ignored', 'save-click': ''};
+    assert.equal(renderToStaticMarkup(React.createElement(require(result.generated).default, supplied)), renderToStaticMarkup(renderComposition(doc, metadata, library, {props: supplied})));
+  } finally { result.dispose(); }
+});
+
+test('non-defaulted prop access uses dot notation for Unicode and reserved property identifiers', () => {
+  const doc = document();
+  doc.locals = {};
+  doc.props = Object.fromEntries(['π', 'default', 'display-name', 'nested.name'].map(name => [name, {schema: string, required: true}]));
+  doc.root.props = {label: composed(expression(Object.keys(doc.props).map(prop).reduce((left, right) => binary('+', left, right))))};
+  const source = exportDocument(doc);
+  assert.match(source, /props.π/);
+  assert.match(source, /props.default/);
+  assert.ok(source.includes('props["display-name"]'));
+  assert.ok(source.includes('props["nested.name"]'));
+  const result = compile(source);
+  try {
+    assert.deepEqual(result.diagnostics, []);
+    const supplied = {'π': 'pi', default: '', 'display-name': 'Name', 'nested.name': 'Nested'};
+    assert.equal(renderToStaticMarkup(React.createElement(require(result.generated).default, supplied)), renderToStaticMarkup(renderComposition(doc, metadata, library, {props: supplied})));
+  } finally { result.dispose(); }
+});
+
+test('nullable defaults preserve explicit null while falsy non-nullable values stay live', () => {
+  const doc = document();
+  doc.props.label = {schema: {type: 'union', types: [string, {type: 'null'}]}, required: false, defaultValue: {type: 'string', value: 'Default'}};
+  doc.props.count = {schema: number, required: false, defaultValue: {type: 'number', value: 5}};
+  doc.root.props.label = composed(expression(binary('+', binary('??', prop('label'), literal('Null')), prop('count'))));
+  const source = exportDocument(doc);
+  assert.match(source, /const label = props.label === undefined \?/);
+  assert.match(source, /const count = props.count \?\?/);
+  const result = compile(source);
+  try {
+    assert.deepEqual(result.diagnostics, []);
+    const Generated = require(result.generated).default;
+    for (const supplied of [{}, {label: null, count: 0}, {label: '', count: 0, disabled: false}]) {
+      assert.equal(renderToStaticMarkup(React.createElement(Generated, supplied)), renderToStaticMarkup(renderComposition(doc, metadata, library, {props: supplied})));
+    }
+  } finally { result.dispose(); }
+});
+
 test('expressions need schemaVersion 6', () => {
   const older = {...document(), schemaVersion: 5};
   delete older.locals;
@@ -179,7 +255,7 @@ test('?? keeps its parentheses beside && and ||, and text expressions fill an op
   };
   assert.deepEqual(validateComposition(doc, meta, lib).diagnostics.filter(d => d.severity === 'error'), []);
   const source = exportToTsx(doc, meta, lib, {resolveImportPath: () => '../Box'});
-  assert.match(source, /const shout = \(props\["loud"\] \|\| props\["quiet"\]\) \?\? false/);
+  assert.match(source, /const shout = \(props.loud \|\| props.quiet\) \?\? false/);
   const result = compile(source);
   try {
     assert.deepEqual(result.diagnostics, []);
